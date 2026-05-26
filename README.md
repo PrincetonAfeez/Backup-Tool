@@ -1,10 +1,12 @@
 # Backup Tool
 
+![Tests](https://github.com/PrincetonAfeez/Backup-Tool/actions/workflows/tests.yml/badge.svg)
+
 A local Python backup tool that uses content-addressable storage and immutable
 JSON manifests to create incremental, verifiable snapshots.
 
 The core package is standard-library only. The CLI is intentionally thin and
-calls the library API.
+calls the library API. Licensed under [MIT](LICENSE).
 
 ## Quick Start
 
@@ -65,6 +67,12 @@ backup-tool prune --repo .mybackup --keep 5 --dry-run --gc
 When `prune` deletes snapshots without `--gc`, the CLI prints a hint to run
 `gc`. When `check` finds orphan blobs, it suggests the same.
 
+## Block Chunking
+
+Files larger than 1 MiB are split into fixed-size content-addressed chunks.
+Smaller files remain stored as a single blob keyed by the file hash. Shared
+chunks deduplicate across files and snapshots (see ADR 0008).
+
 ## Example Manifest
 
 Each snapshot is an immutable JSON file under `snapshots/`:
@@ -77,6 +85,12 @@ Each snapshot is an immutable JSON file under `snapshots/`:
       "hash": "abc123…",
       "mtime": 1710000000.0,
       "size": 12,
+      "type": "file"
+    },
+    "archive/large.bin": {
+      "chunks": ["chunk_hash_1…", "chunk_hash_2…"],
+      "hash": "full_file_hash…",
+      "size": 2097153,
       "type": "file"
     }
   },
@@ -126,19 +140,28 @@ Blob files are stored under `objects/<first-two-hash-chars>/<full-hash>`.
 
 ## Development
 
-Run the test suite:
+Run the test suite with pytest:
 
 ```powershell
-python -m unittest discover -s tests -v
+pip install -r requirements-dev.txt
+pytest
 ```
 
-CI runs the same command on Ubuntu and Windows for Python 3.11 and 3.12.
+Run tests with coverage:
+
+```powershell
+coverage run -m pytest
+coverage report -m
+```
+
+CI runs `coverage run -m pytest` on Ubuntu and Windows for Python 3.11 and 3.12.
 
 On Windows, symlink tests are skipped unless Developer Mode (or equivalent
 symlink privilege) is enabled. Ubuntu CI covers symlink backup/restore.
 
 The implementation covers the Version 1 CLI/library core: init, backup, list,
 restore, diff, verify, check, prune, gc, dry-run, excludes, strict mode,
-repository locking with stale-lock recovery, path validation, and focused tests
-for strict mode, partial snapshots, symlinks, partial restore, prune+gc, lock
-behavior, and CLI polish.
+fixed-size block chunking for large files, repository locking with stale-lock
+recovery, path validation, and focused tests for chunking, strict/partial
+snapshots, symlinks, partial restore, prune+gc, lock behavior, CLI polish,
+empty/unchanged backups, and concurrent lock contention.
