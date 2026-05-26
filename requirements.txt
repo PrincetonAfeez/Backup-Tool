@@ -1,0 +1,7 @@
+# Backup Tool has no third-party runtime dependencies.
+# The implementation uses the Python standard library only.
+#
+# Requires Python >=3.11
+#
+# Install the package (editable):
+#   pip install -e .
