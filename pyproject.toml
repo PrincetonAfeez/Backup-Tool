@@ -8,7 +8,8 @@ version = "0.1.0"
 description = "A local content-addressable backup tool with immutable JSON snapshots."
 readme = "README.md"
 requires-python = ">=3.11"
-authors = [{ name = "Backup Tool Student" }]
+license = { text = "MIT" }
+authors = [{ name = "Princeton Afeez" }]
 dependencies = []
 
 [project.scripts]
@@ -17,3 +18,18 @@ backup-tool = "backup_tool.cli:main"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["backup_tool*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-ra"
+
+[tool.coverage.run]
+source = ["backup_tool"]
+omit = ["tests/*"]
+
+[tool.coverage.report]
+show_missing = true
+skip_empty = true
+fail_under = 85
+
