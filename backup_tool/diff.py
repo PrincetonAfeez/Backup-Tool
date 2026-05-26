@@ -9,6 +9,8 @@ from backup_tool.manifest import FileEntry, Manifest
 
 @dataclass(frozen=True)
 class DiffResult:
+    """Path lists are sorted ascending (see ``classify_entries``)."""
+
     added: list[str]
     changed: list[str]
     deleted: list[str]

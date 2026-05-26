@@ -2,8 +2,8 @@
 
 ![Tests](https://github.com/PrincetonAfeez/Backup-Tool/actions/workflows/tests.yml/badge.svg)
 
-A local Python backup tool that uses content-addressable storage and immutable
-JSON manifests to create incremental, verifiable snapshots.
+A local Python backup tool that uses content-addressable storage and append-only
+JSON snapshot manifests to create incremental, verifiable snapshots.
 
 The core package is standard-library only. The CLI is intentionally thin and
 calls the library API. Licensed under [MIT](LICENSE).
@@ -24,10 +24,12 @@ After installing the package, the same commands are available as `backup-tool`.
 
 ```text
 backup-tool version
-backup-tool init --repo <path> [--break-lock]
+backup-tool init --repo <path> [--allow-nonempty] [--break-lock]
 backup-tool backup <src> --repo <path> [--exclude <pattern>] [--dry-run] [--strict] [--verbose] [--break-lock]
 backup-tool list --repo <path>
-backup-tool restore <snapshot> --repo <path> --to <destination> [--file <relative-path>] [--force] [--break-lock]
+backup-tool info --repo <path>
+backup-tool show <snapshot> --repo <path>
+backup-tool restore <snapshot> --repo <path> --to <destination> [--file <relative-path>] [--force] [--safe-symlinks] [--break-lock]
 backup-tool diff <snapshot-a> <snapshot-b> --repo <path> [--verbose]
 backup-tool verify <snapshot> --repo <path>
 backup-tool check --repo <path>
@@ -41,6 +43,9 @@ automatically. Use `backup --verbose` to see when a stale lock was removed.
 
 `list` marks the newest snapshot with `*` and highlights partial snapshots with
 `[PARTIAL]`.
+
+`info` prints repository metadata and object counts. `show` prints a snapshot
+manifest as JSON (same keys as `Manifest.to_dict()`).
 
 ## Exit Codes
 
@@ -75,7 +80,8 @@ chunks deduplicate across files and snapshots (see ADR 0008).
 
 ## Example Manifest
 
-Each snapshot is an immutable JSON file under `snapshots/`:
+Each snapshot is a JSON file under `snapshots/`. Once committed, a manifest is
+never modified in place; `prune` may delete old manifest files during retention.
 
 ```json
 {
@@ -87,6 +93,11 @@ Each snapshot is an immutable JSON file under `snapshots/`:
       "size": 12,
       "type": "file"
     },
+    "empty-dir": {
+      "mtime": 1710000000.0,
+      "mode": 493,
+      "type": "directory"
+    },
     "archive/large.bin": {
       "chunks": ["chunk_hash_1…", "chunk_hash_2…"],
       "hash": "full_file_hash…",
@@ -97,6 +108,7 @@ Each snapshot is an immutable JSON file under `snapshots/`:
   "hash_algorithm": "sha256",
   "snapshot_id": "2026-05-26T13-00-00-123456Z_abcd1234",
   "source": "C:\\Projects\\docs",
+  "skipped": [],
   "stats": {
     "changed_files": 0,
     "file_count": 1,
@@ -109,18 +121,84 @@ Each snapshot is an immutable JSON file under `snapshots/`:
 }
 ```
 
-See [docs/adr/README.md](docs/adr/README.md) for design decisions.
+See [docs/adr/README.md](docs/adr/README.md) for design decisions. [ADR 0009](docs/adr/0009-manifest-trust-and-tamper-model.md) explains what `verify` does and does not prove.
 
 ## Safety Rules
 
 - Backup never mutates the source directory.
-- Restore refuses to overwrite existing data unless `--force` is supplied.
-- Snapshot manifests are immutable once committed.
+- Restore writes into a fresh staging directory first, then atomically replaces
+  the destination. Without `--force`, restore refuses when the destination already
+  exists (file) or is non-empty (directory). With `--force`, the destination may
+  be replaced only after the staged restore completes successfully.
+- Manifests are never modified after commit; `prune` deletes old manifest files
+  during retention.
+- `verify` detects missing blobs and hash mismatches (bit rot), not manifest
+  tampering — see ADR 0009.
 - A snapshot is committed only after referenced blobs exist.
 - Garbage collection deletes only blobs unreferenced by all surviving snapshots.
 - Manifest paths are normalized relative paths and are checked during restore.
 - Mutating repository operations use a lock file with stale-lock recovery.
 - Partial snapshots (skipped files) emit CLI warnings; use `--strict` to abort instead.
+- When the repository directory lives inside the backup source tree, it is
+  auto-excluded and a warning is printed (see `_with_repo_self_exclude` in code).
+
+## Symlinks
+
+By default, restore recreates symlink targets exactly as recorded in the manifest,
+including absolute paths and `..` segments. Use `--safe-symlinks` on restore to
+reject absolute or parent-escaping targets instead. Directory symlinks on Windows
+use the `is_dir_symlink` flag recorded at backup time.
+
+## Exclude Patterns
+
+`--exclude` patterns match manifest-relative POSIX paths:
+
+| Pattern | Matches |
+|---------|---------|
+| `*.tmp` | Any file whose basename is `*.tmp` at any depth |
+| `__pycache__` | The `__pycache__` directory and everything under it |
+| `build/` | Paths under the `build/` directory prefix |
+| `tests/foo.py` | Only that exact path (patterns with `/` do not fall back to basename matching) |
+| `dir/*.py` | Files directly under `dir/` whose names match `*.py` |
+
+| `dir/*.py` | Files directly under `dir/` whose names match `*.py` |
+
+Patterns with `..` are rejected at the CLI with `Unsafe exclude pattern`.
+Absolute-style patterns such as `/etc` are allowed and matched against the full
+manifest path.
+
+**Basename quirk:** patterns without `/` (for example `*.tmp`) also match on
+basename at any depth. Patterns with `/` (for example `tests/foo.py`) match only
+the full manifest path and do not fall back to basename matching.
+
+## Repository metadata
+
+Each repository stores metadata in `repo.json`:
+
+| Field | Meaning | Validated by `check` |
+|-------|---------|----------------------|
+| `version` | Repository format version (currently `1`) | yes |
+| `created_at` | UTC timestamp when the repository was initialized | no |
+| `hash_algorithm` | Content hash used for blobs (`sha256`) | yes |
+| `storage` | Storage model (`content-addressable`) | yes |
+| `object_layout` | Blob path layout (`sha256-prefix-2`) | yes |
+| `chunking` | Large-file chunking scheme (`fixed-1mb-blocks-above-threshold`) | yes |
+
+Use `backup-tool info --repo <path>` to print this metadata plus snapshot and
+object counts. Use `backup-tool show <snapshot> --repo <path>` to inspect one
+manifest without opening files manually.
+
+Implementation modules: see [ADR 0010](docs/adr/0010-module-layout.md) for
+`gc.py`, `verify.py`, and `metadata.py` (file mode/mtime restoration).
+
+## Limitations
+
+This tool is intended for small, local datasets in an academic setting:
+
+- Backup walks the source tree and materializes the full file list in memory
+  before sorting.
+- No parallel backup, compression, or encryption.
+- No incremental mtime-only fast path (every included file is re-hashed).
 
 ## Repository Layout
 
@@ -131,6 +209,7 @@ See [docs/adr/README.md](docs/adr/README.md) for design decisions.
             abcdef...
     snapshots/
         2026-05-26T13-00-00Z_abcd1234.json
+        2026-05-26T13-00-00Z_abcd1234.json.sha256
     tmp/
     repo.json
     lock
@@ -144,6 +223,7 @@ Run the test suite with pytest:
 
 ```powershell
 pip install -r requirements-dev.txt
+pip install -e .
 pytest
 ```
 
@@ -154,7 +234,14 @@ coverage run -m pytest
 coverage report -m
 ```
 
-CI runs `coverage run -m pytest` on Ubuntu and Windows for Python 3.11 and 3.12.
+Run lint and type checks:
+
+```powershell
+ruff check backup_tool tests
+mypy --strict --follow-imports=silent backup_tool/manifest.py
+```
+
+CI installs the package with `pip install -e .`, smoke-tests `backup-tool version`, runs pytest with coverage (85% minimum), ruff, and mypy on Ubuntu and Windows for Python 3.11 and 3.12.
 
 On Windows, symlink tests are skipped unless Developer Mode (or equivalent
 symlink privilege) is enabled. Ubuntu CI covers symlink backup/restore.

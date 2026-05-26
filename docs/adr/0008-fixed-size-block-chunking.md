@@ -16,3 +16,16 @@ the manifest format easy to explain for an academic project.
 Chunking adds manifest complexity (`chunks` arrays), restore assembly logic, and
 GC reference tracking per chunk. Rolling hash / content-defined chunking is out
 of scope.
+
+## Related ADRs
+
+- [ADR 0004](0004-manifest-as-shallow-merkle-structure.md) — manifest maps paths
+  to whole-file hashes and optional `chunks` arrays for large files.
+
+## Orphan blobs from aborted or partial backups
+
+When a file is hashed and stored but later skipped (for example because it
+changed during the stability check, or because strict mode aborts the snapshot),
+the blob may remain in the object store without being referenced by any manifest.
+These orphans are harmless until garbage collection reclaims them; run
+`backup-tool gc` to remove unreferenced blobs after an aborted backup.

@@ -1,13 +1,12 @@
 """Tests for backup_tool.manifest."""
 
-import json
-from hashlib import sha256
 from pathlib import Path
 
 import pytest
 
 from backup_tool.errors import ManifestError
-from backup_tool.manifest import MANIFEST_VERSION, FileEntry, Manifest, ManifestStore
+from backup_tool.manifest import FileEntry, Manifest, ManifestStore, write_manifest_digest
+from tests.conftest import manifest_hash
 
 
 def _sample_manifest(**overrides) -> Manifest:
@@ -24,23 +23,43 @@ def _sample_manifest(**overrides) -> Manifest:
 
 
 def test_file_entry_round_trip_whole_file():
-    entry = FileEntry(type="file", hash="abc", size=3, mtime=1.0, mode=0o644)
+    file_hash = manifest_hash("abc")
+    entry = FileEntry(type="file", hash=file_hash, size=3, mtime=1.0, mode=0o644)
     loaded = FileEntry.from_dict(entry.to_dict())
     assert loaded == entry
-    assert loaded.identity() == ("file", "abc", None)
+    assert loaded.identity() == ("file", file_hash, None, 0o644)
 
 
 def test_file_entry_round_trip_chunked():
-    entry = FileEntry(type="file", hash="full", size=10, chunks=("c1", "c2"))
+    file_hash = manifest_hash("full")
+    chunk_a = manifest_hash("c1")
+    chunk_b = manifest_hash("c2")
+    entry = FileEntry(type="file", hash=file_hash, size=10, chunks=(chunk_a, chunk_b))
     loaded = FileEntry.from_dict(entry.to_dict())
-    assert loaded.chunks == ("c1", "c2")
-    assert loaded.identity() == ("file", "full", ("c1", "c2"))
+    assert loaded.chunks == (chunk_a, chunk_b)
+    assert loaded.identity() == ("file", file_hash, (chunk_a, chunk_b), None)
 
 
 def test_file_entry_symlink_round_trip():
-    entry = FileEntry(type="symlink", target="dest.txt", mode=0o777)
+    entry = FileEntry(type="symlink", target="dest.txt", mode=0o777, is_dir_symlink=False)
     loaded = FileEntry.from_dict(entry.to_dict())
-    assert loaded.identity() == ("symlink", "dest.txt")
+    assert loaded.identity() == ("symlink", "dest.txt", 0o777, False)
+
+
+def test_file_entry_directory_round_trip():
+    entry = FileEntry(type="directory", mode=0o755)
+    loaded = FileEntry.from_dict(entry.to_dict())
+    assert loaded.identity() == ("directory", 0o755)
+
+
+def test_file_entry_direct_construct_rejects_invalid_type():
+    with pytest.raises(ManifestError, match="Unsupported file entry type"):
+        FileEntry(type="device")
+
+
+def test_file_entry_direct_construct_rejects_missing_file_hash():
+    with pytest.raises(ManifestError, match="missing hash"):
+        FileEntry(type="file")
 
 
 @pytest.mark.parametrize(
@@ -49,8 +68,9 @@ def test_file_entry_symlink_round_trip():
         ({"type": "dir"}, "Unsupported file entry type"),
         ({"type": "file"}, "missing hash"),
         ({"type": "symlink"}, "missing target"),
-        ({"type": "file", "hash": "x", "chunks": []}, "non-empty list"),
-        ({"type": "file", "hash": "x", "chunks": "bad"}, "non-empty list"),
+        ({"type": "file", "hash": manifest_hash("x"), "chunks": []}, "non-empty list"),
+        ({"type": "file", "hash": manifest_hash("x"), "chunks": "bad"}, "non-empty list"),
+        ({"type": "file", "hash": "short"}, "Invalid SHA-256 hash length"),
     ],
 )
 def test_file_entry_from_dict_validation(data, match):
@@ -61,8 +81,8 @@ def test_file_entry_from_dict_validation(data, match):
 def test_manifest_to_dict_sorts_files():
     manifest = _sample_manifest(
         files={
-            "b.txt": FileEntry(type="file", hash="2"),
-            "a.txt": FileEntry(type="file", hash="1"),
+            "b.txt": FileEntry(type="file", hash=manifest_hash("2")),
+            "a.txt": FileEntry(type="file", hash=manifest_hash("1")),
         }
     )
     data = manifest.to_dict()
@@ -78,6 +98,51 @@ def test_manifest_from_dict_validation_errors():
         Manifest.from_dict({"version": 1, "files": {}})
 
 
+def test_manifest_rejects_unsupported_hash_algorithm():
+    payload = {
+        "version": 1,
+        "snapshot_id": "id",
+        "created_at": "t",
+        "source": "src",
+        "hash_algorithm": "sha512",
+        "status": "complete",
+        "stats": {},
+        "files": {},
+    }
+    with pytest.raises(ManifestError, match="Unsupported manifest hash algorithm"):
+        Manifest.from_dict(payload)
+
+
+def test_manifest_rejects_invalid_status():
+    payload = {
+        "version": 1,
+        "snapshot_id": "id",
+        "created_at": "t",
+        "source": "src",
+        "hash_algorithm": "sha256",
+        "status": "broken",
+        "stats": {},
+        "files": {},
+    }
+    with pytest.raises(ManifestError, match="Unsupported manifest status"):
+        Manifest.from_dict(payload)
+
+
+def test_manifest_rejects_non_object_stats():
+    payload = {
+        "version": 1,
+        "snapshot_id": "id",
+        "created_at": "t",
+        "source": "src",
+        "hash_algorithm": "sha256",
+        "status": "complete",
+        "stats": [],
+        "files": {},
+    }
+    with pytest.raises(ManifestError, match="Manifest stats must be an object"):
+        Manifest.from_dict(payload)
+
+
 def test_manifest_duplicate_normalized_paths():
     payload = {
         "version": 1,
@@ -88,12 +153,47 @@ def test_manifest_duplicate_normalized_paths():
         "status": "complete",
         "stats": {},
         "files": {
-            "foo/bar": {"type": "file", "hash": "1"},
-            "foo\\bar": {"type": "file", "hash": "2"},
+            "foo/bar": {"type": "file", "hash": manifest_hash("1")},
+            "foo\\bar": {"type": "file", "hash": manifest_hash("2")},
         },
     }
     with pytest.raises(ManifestError, match="Duplicate normalized"):
         Manifest.from_dict(payload)
+
+
+def test_manifest_store_save_writes_digest_sidecar(tmp_path: Path):
+    store = ManifestStore(tmp_path)
+    store.init()
+    manifest = Manifest(
+        snapshot_id="2026-01-01T00-00-00Z_abcd1234",
+        created_at="2026-01-01T00:00:00Z",
+        source="src",
+        status="complete",
+        stats={"file_count": 0},
+        files={},
+    )
+    path = store.save(manifest)
+    sidecar = path.with_name(f"{path.name}.sha256")
+    assert sidecar.exists()
+    loaded = store.load(manifest.snapshot_id)
+    assert loaded.snapshot_id == manifest.snapshot_id
+
+
+def test_manifest_digest_rejects_tampered_file(tmp_path: Path):
+    store = ManifestStore(tmp_path)
+    store.init()
+    manifest = Manifest(
+        snapshot_id="2026-01-01T00-00-00Z_abcd1234",
+        created_at="2026-01-01T00:00:00Z",
+        source="src",
+        status="complete",
+        stats={"file_count": 0},
+        files={},
+    )
+    path = store.save(manifest)
+    path.write_text('{"version": 1, "tampered": true}\n', encoding="utf-8")
+    with pytest.raises(ManifestError, match="digest mismatch"):
+        store.load_path(path)
 
 
 def test_manifest_store_round_trip(tmp_path: Path):
@@ -145,6 +245,7 @@ def test_manifest_store_load_path_invalid_json(tmp_path: Path):
     store.init()
     bad = tmp_path / "bad.json"
     bad.write_text("{bad", encoding="utf-8")
+    write_manifest_digest(bad)
     with pytest.raises(ManifestError, match="Could not load manifest"):
         store.load_path(bad)
 

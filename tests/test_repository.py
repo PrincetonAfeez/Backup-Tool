@@ -10,6 +10,7 @@ import pytest
 from backup_tool.errors import LockError, RepositoryError, RestoreError
 from backup_tool.lock import RepositoryLock
 from backup_tool.repository import Repository
+from backup_tool.verify import check_repository
 
 
 def test_init_creates_repository(repo_path: Path):
@@ -23,6 +24,51 @@ def test_init_existing_repository_raises(repo_path: Path):
     Repository.init(repo_path)
     with pytest.raises(RepositoryError, match="already exists"):
         Repository.init(repo_path)
+
+
+def test_init_nonempty_directory_raises(tmp_path: Path):
+    repo_path = tmp_path / "repo"
+    repo_path.mkdir()
+    (repo_path / "unrelated.txt").write_text("data", encoding="utf-8")
+    with pytest.raises(RepositoryError, match="not empty"):
+        Repository.init(repo_path)
+
+
+def test_init_nonempty_directory_with_allow_nonempty(tmp_path: Path):
+    repo_path = tmp_path / "repo"
+    repo_path.mkdir()
+    (repo_path / "unrelated.txt").write_text("data", encoding="utf-8")
+    repo = Repository.init(repo_path, allow_nonempty=True)
+    assert repo.repo_json.exists()
+    assert (repo_path / "unrelated.txt").exists()
+
+
+def test_invalid_repo_metadata_rejected_on_open(repo_path: Path):
+    Repository.init(repo_path)
+    repo_path.joinpath("repo.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "created_at": "2026-01-01T00:00:00.000000Z",
+                "hash_algorithm": "sha256",
+                "storage": "wrong",
+                "object_layout": "sha256-prefix-2",
+                "chunking": "fixed-1mb-blocks-above-threshold",
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(RepositoryError, match="Unsupported storage"):
+        Repository(repo_path).list_snapshots()
+
+
+def test_check_rejects_invalid_repo_metadata(repo: Repository):
+    metadata = json.loads(repo.repo_json.read_text(encoding="utf-8"))
+    metadata["chunking"] = "rolling-hash"
+    repo.repo_json.write_text(json.dumps(metadata), encoding="utf-8")
+    check = check_repository(repo)
+    assert check.ok is False
+    assert any("chunking" in error for error in check.errors)
 
 
 def test_backup_on_uninitialized_path_raises(tmp_path: Path, source_dir: Path):
@@ -85,6 +131,7 @@ def test_repo_inside_source_is_excluded(tmp_path: Path):
     Repository.init(repo_path)
     result = Repository(repo_path).backup(source)
     assert sorted(result.manifest.files) == ["data.txt"]
+    assert any("added to --exclude automatically" in warning for warning in result.warnings)
 
 
 def test_empty_source_backup(repo: Repository, source_dir: Path):
@@ -123,6 +170,7 @@ def test_verify_detects_corrupt_blob(repo: Repository, source_dir: Path):
     repo.object_store.get_path(blob_hash).write_text("corrupt", encoding="utf-8")
     verify = repo.verify("latest")
     assert verify.ok is False
+    assert any("Hash mismatch" in error for error in verify.errors)
 
 
 def test_check_invalid_manifest_and_repo_json(repo: Repository):
@@ -148,6 +196,26 @@ def test_prune_with_gc(repo: Repository, source_dir: Path):
     assert not repo.object_store.exists(old_hash)
 
 
+def test_prune_dry_run_gc_uses_kept_manifests(repo: Repository, source_dir: Path):
+    (source_dir / "v1.txt").write_text("one", encoding="utf-8")
+    first = repo.backup(source_dir)
+    old_hash = first.manifest.files["v1.txt"].hash
+    (source_dir / "v1.txt").write_text("two", encoding="utf-8")
+    repo.backup(source_dir)
+    result = repo.prune(keep=1, dry_run=True, run_gc=True)
+    assert result.gc_result is not None
+    assert old_hash in result.gc_result.deleted_blobs
+    assert repo.object_store.exists(old_hash)
+
+
+def test_gc_dry_run_reports_bytes_deleted(repo: Repository):
+    orphan = repo.object_store.put_bytes(b"orphan-bytes")
+    result = repo.gc(dry_run=True)
+    assert orphan.hash_hex in result.deleted_blobs
+    assert result.bytes_deleted == len(b"orphan-bytes")
+    assert repo.object_store.exists(orphan.hash_hex)
+
+
 def test_active_lock_blocks_backup(repo: Repository, source_dir: Path):
     (source_dir / "data.txt").write_text("data", encoding="utf-8")
     lock = RepositoryLock(repo.lock_path)
@@ -164,3 +232,38 @@ def test_stale_lock_auto_cleared(repo: Repository, source_dir: Path):
     repo.lock_path.write_text("pid=0\ntime=0\n", encoding="utf-8")
     result = repo.backup(source_dir)
     assert result.committed
+
+
+def test_dry_run_backup_acquires_lock(repo: Repository, source_dir: Path):
+    (source_dir / "data.txt").write_text("data", encoding="utf-8")
+    lock = RepositoryLock(repo.lock_path)
+    lock.acquire()
+    try:
+        with pytest.raises(LockError):
+            repo.backup(source_dir, dry_run=True)
+    finally:
+        lock.release()
+
+
+def test_verify_acquires_lock(repo: Repository, source_dir: Path):
+    (source_dir / "data.txt").write_text("data", encoding="utf-8")
+    repo.backup(source_dir)
+    lock = RepositoryLock(repo.lock_path)
+    lock.acquire()
+    try:
+        with pytest.raises(LockError):
+            repo.verify("latest")
+    finally:
+        lock.release()
+
+
+def test_list_snapshots_acquires_lock(repo: Repository, source_dir: Path):
+    (source_dir / "data.txt").write_text("data", encoding="utf-8")
+    repo.backup(source_dir)
+    lock = RepositoryLock(repo.lock_path)
+    lock.acquire()
+    try:
+        with pytest.raises(LockError):
+            repo.list_snapshots()
+    finally:
+        lock.release()

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import os
+import shutil
 import tempfile
+import time
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
@@ -12,6 +14,9 @@ from typing import BinaryIO
 from backup_tool.atomic import fsync_directory
 from backup_tool.errors import IntegrityError, StoreError
 from backup_tool.hashing import DEFAULT_CHUNK_SIZE, hash_file
+
+
+DEFAULT_TMP_MAX_AGE_SECONDS = 24 * 3600
 
 
 @dataclass(frozen=True)
@@ -50,10 +55,19 @@ class ObjectStore:
     def exists(self, hash_hex: str) -> bool:
         return self.get_path(hash_hex).is_file()
 
+    def _existing_blob_valid(self, hash_hex: str) -> bool:
+        final_path = self.get_path(hash_hex)
+        if not final_path.is_file():
+            return False
+        try:
+            return self.verify_blob(hash_hex)
+        except IntegrityError:
+            return False
+
     def put_bytes(self, data: bytes) -> BlobInfo:
         hash_hex = sha256(data).hexdigest()
         final_path = self.get_path(hash_hex)
-        if final_path.exists():
+        if final_path.exists() and self._existing_blob_valid(hash_hex):
             return BlobInfo(hash_hex, len(data), False, 0)
 
         final_path.parent.mkdir(parents=True, exist_ok=True)
@@ -97,7 +111,7 @@ class ObjectStore:
 
             hash_hex = digest.hexdigest()
             final_path = self.get_path(hash_hex)
-            if final_path.exists():
+            if final_path.exists() and self._existing_blob_valid(hash_hex):
                 temp_path.unlink(missing_ok=True)
                 return BlobInfo(hash_hex, size, False, 0)
 
@@ -126,20 +140,95 @@ class ObjectStore:
         path = self.get_path(hash_hex)
         if not path.exists():
             raise IntegrityError(f"Missing blob: {hash_hex}")
-        return hash_file(path).hash_hex == hash_hex
+        try:
+            return hash_file(path).hash_hex == hash_hex
+        except OSError as exc:
+            raise StoreError(f"Could not read blob {hash_hex}: {exc}") from exc
 
-    def iter_hashes(self) -> list[str]:
+    def malformed_path_hash(self, path: Path) -> str | None:
+        try:
+            return validate_hash(path.name)
+        except StoreError:
+            return None
+
+    def quarantine_malformed(
+        self,
+        quarantine_dir: Path,
+        *,
+        dry_run: bool = False,
+    ) -> list[tuple[str, str | None]]:
+        """Move malformed object paths into quarantine."""
+
+        quarantine_dir.mkdir(parents=True, exist_ok=True)
+        quarantined: list[tuple[str, str | None]] = []
+
+        for path in self.iter_malformed_paths():
+            hash_hex = self.malformed_path_hash(path)
+            label = hash_hex or "invalid-name"
+            destination = quarantine_dir / f"{label}__{path.name}"
+            if not dry_run:
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(path), str(destination))
+            quarantined.append((str(path), hash_hex))
+
+        return quarantined
+
+    def iter_stale_tmp_files(self, max_age_seconds: float = DEFAULT_TMP_MAX_AGE_SECONDS) -> list[Path]:
+        if not self.tmp_dir.exists():
+            return []
+
+        cutoff = time.time() - max_age_seconds
+        stale: list[Path] = []
+        for path in self.tmp_dir.iterdir():
+            if not path.is_file():
+                continue
+            if not (path.name.startswith(".blob.") and path.name.endswith(".tmp")):
+                continue
+            try:
+                if path.stat().st_mtime <= cutoff:
+                    stale.append(path)
+            except OSError:
+                continue
+        return sorted(stale)
+
+    def remove_stale_tmp_files(
+        self,
+        max_age_seconds: float = DEFAULT_TMP_MAX_AGE_SECONDS,
+        *,
+        dry_run: bool = False,
+    ) -> tuple[list[str], int]:
+        removed: list[str] = []
+        bytes_deleted = 0
+        for path in self.iter_stale_tmp_files(max_age_seconds):
+            try:
+                bytes_deleted += path.stat().st_size
+            except OSError:
+                pass
+            if not dry_run:
+                path.unlink(missing_ok=True)
+            removed.append(str(path))
+        return removed, bytes_deleted
+
+    def iter_blob_paths(self) -> list[tuple[str, Path]]:
+        """Return (hash_hex, path) for every well-placed blob file on disk."""
         if not self.objects_dir.exists():
             return []
 
-        hashes: list[str] = []
-        for path in self.objects_dir.glob("*/*"):
-            if path.is_file():
-                try:
-                    hashes.append(validate_hash(path.name))
-                except StoreError:
-                    continue
-        return sorted(hashes)
+        blobs: list[tuple[str, Path]] = []
+        for path in self.objects_dir.rglob("*"):
+            if not path.is_file():
+                continue
+            try:
+                hash_hex = validate_hash(path.name)
+            except StoreError:
+                continue
+            if path.parent.name != hash_hex[:2]:
+                continue
+            blobs.append((hash_hex, path))
+        return sorted(blobs, key=lambda item: item[0])
+
+    def iter_hashes(self) -> list[str]:
+        return [hash_hex for hash_hex, _path in self.iter_blob_paths()]
 
     def iter_malformed_paths(self) -> list[Path]:
         malformed: list[Path] = []

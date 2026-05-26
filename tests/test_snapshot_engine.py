@@ -59,18 +59,18 @@ def test_build_snapshot_dry_run_does_not_store(engine: SnapshotEngine, source_di
     assert engine.object_store.iter_hashes() == []
 
 
-def test_build_snapshot_strict_aborts(skip_read_patch, engine: SnapshotEngine, source_dir: Path):
+def test_build_snapshot_strict_aborts(skip_predicate, engine: SnapshotEngine, source_dir: Path):
     (source_dir / "keep.txt").write_text("keep", encoding="utf-8")
     (source_dir / "skip-me.txt").write_text("skip", encoding="utf-8")
-    result = engine.build_snapshot(source_dir, None, strict=True)
+    result = engine.build_snapshot(source_dir, None, strict=True, skip_predicate=skip_predicate)
     assert result.manifest is None
     assert result.committed is False
 
 
-def test_build_snapshot_partial_when_not_strict(skip_read_patch, engine: SnapshotEngine, source_dir: Path):
+def test_build_snapshot_partial_when_not_strict(skip_predicate, engine: SnapshotEngine, source_dir: Path):
     (source_dir / "keep.txt").write_text("keep", encoding="utf-8")
     (source_dir / "skip-me.txt").write_text("skip", encoding="utf-8")
-    result = engine.build_snapshot(source_dir, None)
+    result = engine.build_snapshot(source_dir, None, skip_predicate=skip_predicate)
     assert result.manifest.status == "partial"
 
 
@@ -128,3 +128,13 @@ def test_build_and_restore_symlink(engine: SnapshotEngine, source_dir: Path, tmp
 def test_is_excluded_directory_prefix(engine: SnapshotEngine):
     assert engine._is_excluded("repo/data.txt", ["repo"]) is True
     assert engine._is_excluded("other/data.txt", ["repo"]) is False
+
+
+def test_is_excluded_path_pattern_does_not_match_basename_only(engine: SnapshotEngine, source_dir: Path):
+    nested = source_dir / "tests"
+    nested.mkdir()
+    (nested / "foo.py").write_text("x", encoding="utf-8")
+    (source_dir / "foo.py").write_text("y", encoding="utf-8")
+    result = engine.build_snapshot(source_dir, None, excludes=["tests/foo.py"])
+    assert "tests/foo.py" not in result.manifest.files
+    assert "foo.py" in result.manifest.files

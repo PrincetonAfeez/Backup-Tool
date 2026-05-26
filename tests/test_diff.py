@@ -1,11 +1,13 @@
 """Tests for backup_tool.diff."""
 
+
 from backup_tool.diff import DiffResult, classify_entries, diff_manifests
 from backup_tool.manifest import FileEntry, Manifest
+from tests.conftest import manifest_hash
 
 
 def _file_entry(content_hash: str, chunks: tuple[str, ...] | None = None) -> FileEntry:
-    return FileEntry(type="file", hash=content_hash, size=1, chunks=chunks)
+    return FileEntry(type="file", hash=manifest_hash(content_hash), size=1, chunks=chunks)
 
 
 def test_diff_result_has_changes_property():
@@ -33,10 +35,18 @@ def test_classify_entries_detects_add_change_delete_unchanged():
 
 
 def test_classify_entries_treats_chunk_changes_as_changed():
-    previous = {"big.bin": _file_entry("h1", ("c1", "c2"))}
-    current = {"big.bin": _file_entry("h2", ("c1", "c3"))}
+    previous = {"big.bin": _file_entry("h1", (manifest_hash("c1"), manifest_hash("c2")))}
+    current = {"big.bin": _file_entry("h2", (manifest_hash("c1"), manifest_hash("c3")))}
     result = classify_entries(current, previous)
     assert result.changed == ["big.bin"]
+
+
+def test_classify_entries_treats_mode_change_as_changed():
+    shared_hash = manifest_hash("h")
+    previous = {"a.txt": FileEntry(type="file", hash=shared_hash, size=1, mode=0o644)}
+    current = {"a.txt": FileEntry(type="file", hash=shared_hash, size=1, mode=0o600)}
+    result = classify_entries(current, previous)
+    assert result.changed == ["a.txt"]
 
 
 def test_classify_entries_with_no_previous():

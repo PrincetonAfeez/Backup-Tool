@@ -89,6 +89,24 @@ def test_put_file_missing_source_raises(store: ObjectStore, tmp_path: Path):
         store.put_file(tmp_path / "missing.bin")
 
 
+def test_put_bytes_repairs_corrupt_blob(store: ObjectStore):
+    blob = store.put_bytes(b"good")
+    store.get_path(blob.hash_hex).write_text("bad", encoding="utf-8")
+    repaired = store.put_bytes(b"good")
+    assert repaired.stored_new_blob is True
+    assert store.verify_blob(blob.hash_hex)
+
+
+def test_put_file_repairs_corrupt_blob(store: ObjectStore, tmp_path: Path):
+    path = tmp_path / "file.bin"
+    path.write_bytes(b"payload")
+    first = store.put_file(path)
+    store.get_path(first.hash_hex).write_text("bad", encoding="utf-8")
+    second = store.put_file(path)
+    assert second.stored_new_blob is True
+    assert store.verify_blob(first.hash_hex)
+
+
 def test_exists_and_get_path(store: ObjectStore):
     blob = store.put_bytes(b"data")
     assert store.exists(blob.hash_hex)

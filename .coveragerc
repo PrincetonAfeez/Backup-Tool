@@ -1,8 +1,0 @@
-[run]
-source = backup_tool
-omit =
-    tests/*
-
-[report]
-show_missing = True
-skip_empty = True

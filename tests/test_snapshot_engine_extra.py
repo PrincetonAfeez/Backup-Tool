@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from backup_tool.errors import RestoreError
+from backup_tool.errors import ManifestError, RestoreError
 from backup_tool.manifest import FileEntry, Manifest
 from backup_tool.object_store import ObjectStore
 from backup_tool.snapshot_engine import SnapshotEngine
@@ -35,30 +35,14 @@ def test_restore_snapshot_existing_file_requires_force(engine: SnapshotEngine, s
         engine.restore_snapshot(manifest, destination)
 
 
-def test_restore_snapshot_unsupported_entry_type(engine: SnapshotEngine, tmp_path: Path):
-    manifest = Manifest(
-        snapshot_id="id",
-        created_at="t",
-        source="src",
-        status="complete",
-        stats={},
-        files={"bad": FileEntry(type="device")},
-    )
-    with pytest.raises(RestoreError, match="Unsupported entry type"):
-        engine.restore_snapshot(manifest, tmp_path / "restore")
+def test_restore_snapshot_unsupported_entry_type():
+    with pytest.raises(ManifestError, match="Unsupported file entry type"):
+        FileEntry.from_dict({"type": "device"})
 
 
-def test_restore_snapshot_missing_file_hash(engine: SnapshotEngine, tmp_path: Path):
-    manifest = Manifest(
-        snapshot_id="id",
-        created_at="t",
-        source="src",
-        status="complete",
-        stats={},
-        files={"bad.txt": FileEntry(type="file", hash=None)},
-    )
-    with pytest.raises(RestoreError, match="missing hash"):
-        engine.restore_snapshot(manifest, tmp_path / "restore")
+def test_restore_snapshot_missing_file_hash():
+    with pytest.raises(ManifestError, match="missing hash"):
+        FileEntry.from_dict({"type": "file"})
 
 
 def test_build_snapshot_increments_diff_against_previous(engine: SnapshotEngine, source_dir: Path):

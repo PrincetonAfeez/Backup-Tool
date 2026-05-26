@@ -3,11 +3,17 @@
 from __future__ import annotations
 
 import os
+import tempfile
 import time
 from pathlib import Path
+from secrets import token_hex
 from types import TracebackType
 
+from backup_tool.atomic import fsync_directory
 from backup_tool.errors import LockError
+
+
+ERROR_ACCESS_DENIED = 5
 
 
 def read_lock_pid(path: Path) -> int | None:
@@ -27,6 +33,30 @@ def read_lock_pid(path: Path) -> int | None:
     return None
 
 
+def read_lock_token(path: Path) -> str | None:
+    """Return the acquisition token recorded in a lock file, if present."""
+
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+
+    for line in text.splitlines():
+        if line.startswith("token="):
+            token = line.split("=", 1)[1]
+            return token or None
+    return None
+
+
+def _write_all(fd: int, data: bytes) -> None:
+    offset = 0
+    while offset < len(data):
+        written = os.write(fd, data[offset:])
+        if written == 0:
+            raise OSError("Failed to write lock payload")
+        offset += written
+
+
 def is_process_alive(pid: int) -> bool:
     """Return True when the given PID appears to be running."""
 
@@ -40,6 +70,8 @@ def is_process_alive(pid: int) -> bool:
         handle = ctypes.windll.kernel32.OpenProcess(process_query_limited, False, pid)
         if handle:
             ctypes.windll.kernel32.CloseHandle(handle)
+            return True
+        if ctypes.windll.kernel32.GetLastError() == ERROR_ACCESS_DENIED:
             return True
         return False
 
@@ -79,6 +111,7 @@ class RepositoryLock:
         self.path = path
         self.break_lock = break_lock
         self._fd: int | None = None
+        self._token: str | None = None
         self.cleared_stale_pid: int | None = None
 
     def acquire(self) -> None:
@@ -102,15 +135,54 @@ class RepositoryLock:
             else:
                 raise LockError(f"Repository is locked: {self.path}") from first_exc
 
-        payload = f"pid={os.getpid()}\ntime={time.time()}\n"
-        os.write(self._fd, payload.encode("utf-8"))
-        os.fsync(self._fd)
+        self._token = token_hex(16)
+        payload = f"pid={os.getpid()}\ntime={time.time()}\ntoken={self._token}\n"
+        try:
+            self._commit_lock_payload(payload)
+        except Exception:
+            self._abort_acquire()
+            raise
+
+    def _commit_lock_payload(self, payload: str) -> None:
+        data = payload.encode("utf-8")
+        temp_fd, temp_name = tempfile.mkstemp(prefix=".lock.", suffix=".tmp", dir=self.path.parent)
+        temp_path = Path(temp_name)
+
+        try:
+            try:
+                _write_all(temp_fd, data)
+                os.fsync(temp_fd)
+            finally:
+                os.close(temp_fd)
+
+            if self._fd is not None:
+                os.close(self._fd)
+                self._fd = None
+
+            os.replace(temp_path, self.path)
+            fsync_directory(self.path.parent)
+        except Exception:
+            temp_path.unlink(missing_ok=True)
+            raise
+
+    def _abort_acquire(self) -> None:
+        if self._fd is not None:
+            try:
+                os.close(self._fd)
+            except OSError:
+                pass
+            self._fd = None
+        self.path.unlink(missing_ok=True)
+        self._token = None
 
     def release(self) -> None:
         if self._fd is not None:
             os.close(self._fd)
             self._fd = None
-        self.path.unlink(missing_ok=True)
+        if self._token is not None and self.path.exists():
+            if read_lock_token(self.path) == self._token:
+                self.path.unlink(missing_ok=True)
+        self._token = None
 
     def __enter__(self) -> "RepositoryLock":
         self.acquire()

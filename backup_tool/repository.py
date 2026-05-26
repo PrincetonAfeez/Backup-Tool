@@ -3,21 +3,24 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from dataclasses import dataclass
 from pathlib import Path
 
-from backup_tool.atomic import atomic_write_json
-from backup_tool.chunking import file_blob_hashes, verify_file_content
+from backup_tool.atomic import atomic_write_json, fsync_directory
+from backup_tool.chunking import file_blob_hashes
 from backup_tool.diff import DiffResult, diff_manifests
-from backup_tool.errors import IntegrityError, ManifestError, RepositoryError
+from backup_tool.errors import ManifestError, RepositoryError
+from backup_tool.gc import GCResult, gc_unlocked
 from backup_tool.lock import RepositoryLock
 from backup_tool.manifest import Manifest, ManifestStore
-from backup_tool.object_store import ObjectStore, StoreError
-from backup_tool.snapshot_engine import RestoreResult, SnapshotEngine, SnapshotResult
+from backup_tool.object_store import ObjectStore
+from backup_tool.paths import validate_exclude_pattern
+from backup_tool.repo_metadata import default_repo_metadata, validate_repo_metadata
+from backup_tool.snapshot_engine import RestoreResult, SnapshotEngine, SnapshotResult, SkipPredicate
+from backup_tool.verify import CheckResult, VerifyResult, check_repository, verify_manifest
 
 
-REPO_VERSION = 1
+REPO_VERSION = 1  # re-export for tests and callers
 
 
 @dataclass(frozen=True)
@@ -30,23 +33,12 @@ class SnapshotSummary:
     new_bytes_stored: int
 
 
-@dataclass
-class VerifyResult:
-    ok: bool
-    snapshot_id: str
-    errors: list[str] = field(default_factory=list)
-    warnings: list[str] = field(default_factory=list)
-
-
-@dataclass
-class CheckResult:
-    ok: bool
-    errors: list[str] = field(default_factory=list)
-    warnings: list[str] = field(default_factory=list)
-    snapshot_count: int = 0
-    object_count: int = 0
-    referenced_object_count: int = 0
-    orphan_object_count: int = 0
+@dataclass(frozen=True)
+class RepoInfo:
+    metadata: dict[str, object]
+    snapshot_count: int
+    object_count: int
+    last_backup_at: str | None
 
 
 @dataclass
@@ -55,14 +47,6 @@ class PruneResult:
     kept_snapshots: list[str]
     dry_run: bool
     gc_result: GCResult | None = None
-
-
-@dataclass
-class GCResult:
-    deleted_blobs: list[str]
-    kept_blobs: list[str]
-    dry_run: bool
-    bytes_deleted: int = 0
 
 
 class Repository:
@@ -80,24 +64,35 @@ class Repository:
         self.engine = SnapshotEngine(self.object_store)
 
     @classmethod
-    def init(cls, path: Path, break_lock: bool = False) -> "Repository":
+    def init(
+        cls,
+        path: Path,
+        break_lock: bool = False,
+        allow_nonempty: bool = False,
+    ) -> "Repository":
         repo = cls(path)
         if repo.repo_json.exists():
             raise RepositoryError(f"Repository already exists: {repo.path}")
-        repo.path.mkdir(parents=True, exist_ok=True)
+        if repo.path.exists():
+            try:
+                existing = list(repo.path.iterdir())
+            except OSError as exc:
+                raise RepositoryError(f"Cannot access {repo.path}: {exc}") from exc
+            if existing and not allow_nonempty:
+                raise RepositoryError(
+                    f"Directory is not empty: {repo.path} "
+                    "(pass allow_nonempty=True to initialize anyway)"
+                )
+        else:
+            try:
+                repo.path.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                raise RepositoryError(f"Cannot create repository at {repo.path}: {exc}") from exc
         with RepositoryLock(repo.lock_path, break_lock=break_lock):
             repo.object_store.init()
             repo.manifest_store.init()
             repo.tmp_dir.mkdir(parents=True, exist_ok=True)
-            metadata = {
-                "version": REPO_VERSION,
-                "created_at": datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
-                "hash_algorithm": "sha256",
-                "storage": "content-addressable",
-                "object_layout": "sha256-prefix-2",
-                "chunking": "fixed-1mb-blocks-above-threshold",
-            }
-            atomic_write_json(repo.repo_json, metadata)
+            atomic_write_json(repo.repo_json, default_repo_metadata())
         return repo
 
     def backup(
@@ -107,40 +102,66 @@ class Repository:
         dry_run: bool = False,
         strict: bool = False,
         break_lock: bool = False,
+        skip_predicate: SkipPredicate = None,
     ) -> SnapshotResult:
         self._ensure_initialized()
-        excludes = self._with_repo_self_exclude(source, excludes or [])
-
-        if dry_run:
-            previous = self.manifest_store.latest()
-            return self.engine.build_snapshot(source, previous, excludes=excludes, dry_run=True, strict=strict)
+        self._validate_backup_source(source)
+        excludes, source_warnings = self._with_repo_self_exclude(source, excludes or [])
+        excludes = [validate_exclude_pattern(pattern) for pattern in excludes]
 
         with RepositoryLock(self.lock_path, break_lock=break_lock) as lock:
             previous = self.manifest_store.latest()
-            result = self.engine.build_snapshot(source, previous, excludes=excludes, dry_run=False, strict=strict)
+            result = self.engine.build_snapshot(
+                source,
+                previous,
+                excludes=excludes,
+                dry_run=dry_run,
+                strict=strict,
+                skip_predicate=skip_predicate,
+            )
             result.stale_lock_cleared_pid = lock.cleared_stale_pid
-            if result.manifest is None:
+            result.warnings.extend(source_warnings)
+            if dry_run or result.manifest is None:
                 return result
             self._ensure_manifest_blobs_exist(result.manifest)
             self.manifest_store.save(result.manifest)
             result.committed = True
             return result
 
-    def list_snapshots(self) -> list[SnapshotSummary]:
+    def list_snapshots(self, break_lock: bool = False) -> list[SnapshotSummary]:
         self._ensure_initialized()
-        summaries: list[SnapshotSummary] = []
-        for manifest in self.manifest_store.list_manifests():
-            summaries.append(
-                SnapshotSummary(
-                    snapshot_id=manifest.snapshot_id,
-                    created_at=manifest.created_at,
-                    source=manifest.source,
-                    status=manifest.status,
-                    file_count=int(manifest.stats.get("file_count", len(manifest.files))),
-                    new_bytes_stored=int(manifest.stats.get("new_bytes_stored", 0)),
+        with RepositoryLock(self.lock_path, break_lock=break_lock):
+            summaries: list[SnapshotSummary] = []
+            for manifest in self.manifest_store.list_manifests():
+                summaries.append(
+                    SnapshotSummary(
+                        snapshot_id=manifest.snapshot_id,
+                        created_at=manifest.created_at,
+                        source=manifest.source,
+                        status=manifest.status,
+                        file_count=int(manifest.stats.get("file_count", len(manifest.files))),
+                        new_bytes_stored=int(manifest.stats.get("new_bytes_stored", 0)),
+                    )
                 )
+            return summaries
+
+    def repo_info(self, break_lock: bool = False) -> RepoInfo:
+        self._ensure_repo_paths()
+        with RepositoryLock(self.lock_path, break_lock=break_lock):
+            metadata = json.loads(self.repo_json.read_text(encoding="utf-8"))
+            manifests = self.manifest_store.list_manifests()
+            last_backup_at = manifests[-1].created_at if manifests else None
+            return RepoInfo(
+                metadata=metadata,
+                snapshot_count=len(manifests),
+                object_count=len(self.object_store.iter_blob_paths()),
+                last_backup_at=last_backup_at,
             )
-        return summaries
+
+    def show_snapshot(self, snapshot_id: str, break_lock: bool = False) -> Manifest:
+        self._ensure_initialized()
+        with RepositoryLock(self.lock_path, break_lock=break_lock):
+            return self._resolve_snapshot(snapshot_id)
 
     def restore(
         self,
@@ -148,100 +169,40 @@ class Repository:
         destination: Path,
         file_path: str | None = None,
         force: bool = False,
+        safe_symlinks: bool = False,
         break_lock: bool = False,
     ) -> RestoreResult:
         self._ensure_initialized()
         with RepositoryLock(self.lock_path, break_lock=break_lock):
             manifest = self._resolve_snapshot(snapshot_id)
-            return self.engine.restore_snapshot(manifest, destination, file_path=file_path, force=force)
+            return self.engine.restore_snapshot(
+                manifest,
+                destination,
+                file_path=file_path,
+                force=force,
+                safe_symlinks=safe_symlinks,
+            )
 
-    def diff(self, snapshot_a: str, snapshot_b: str) -> DiffResult:
+    def diff(self, snapshot_a: str, snapshot_b: str, break_lock: bool = False) -> DiffResult:
         self._ensure_initialized()
-        a = self._resolve_snapshot(snapshot_a)
-        b = self._resolve_snapshot(snapshot_b)
-        return diff_manifests(a, b)
+        with RepositoryLock(self.lock_path, break_lock=break_lock):
+            a = self._resolve_snapshot(snapshot_a)
+            b = self._resolve_snapshot(snapshot_b)
+            return diff_manifests(a, b)
 
-    def verify(self, snapshot_id: str) -> VerifyResult:
+    def verify(self, snapshot_id: str, break_lock: bool = False) -> VerifyResult:
         self._ensure_initialized()
-        errors: list[str] = []
-        warnings: list[str] = []
-
-        try:
-            manifest = self._resolve_snapshot(snapshot_id)
-        except (ManifestError, RepositoryError) as exc:
-            return VerifyResult(False, snapshot_id, [str(exc)], warnings)
-
-        for path, entry in manifest.files.items():
-            if entry.type != "file":
-                continue
-            if not entry.hash:
-                errors.append(f"{path}: file entry missing hash")
-                continue
+        with RepositoryLock(self.lock_path, break_lock=break_lock):
             try:
-                if not verify_file_content(self.object_store, entry):
-                    errors.append(f"{path}: content verification failed for {entry.hash}")
-            except (IntegrityError, StoreError) as exc:
-                errors.append(f"{path}: {exc}")
+                manifest = self._resolve_snapshot(snapshot_id)
+            except (ManifestError, RepositoryError) as exc:
+                return VerifyResult(False, snapshot_id, [str(exc)])
+            return verify_manifest(self, manifest)
 
-        if manifest.status == "partial":
-            warnings.append("snapshot is partial")
-
-        return VerifyResult(not errors, manifest.snapshot_id, errors, warnings)
-
-    def check(self) -> CheckResult:
-        self._ensure_initialized()
-        errors: list[str] = []
-        warnings: list[str] = []
-        referenced: set[str] = set()
-        snapshot_count = 0
-
-        try:
-            metadata = json.loads(self.repo_json.read_text(encoding="utf-8"))
-            if metadata.get("version") != REPO_VERSION:
-                errors.append(f"Unsupported repo version: {metadata.get('version')}")
-            if metadata.get("hash_algorithm") != "sha256":
-                errors.append("Repository hash algorithm is not sha256")
-        except (OSError, json.JSONDecodeError) as exc:
-            errors.append(f"Invalid repo.json: {exc}")
-
-        for path in self.manifest_store.list_paths():
-            try:
-                manifest = self.manifest_store.load_path(path)
-            except ManifestError as exc:
-                errors.append(str(exc))
-                continue
-            snapshot_count += 1
-            for manifest_path, entry in manifest.files.items():
-                if entry.type == "file":
-                    if not entry.hash:
-                        errors.append(f"{manifest.snapshot_id}:{manifest_path}: missing hash")
-                        continue
-                    for blob_hash in file_blob_hashes(entry):
-                        referenced.add(blob_hash)
-                    try:
-                        if not verify_file_content(self.object_store, entry):
-                            errors.append(f"{manifest.snapshot_id}:{manifest_path}: content verification failed")
-                    except (IntegrityError, StoreError) as exc:
-                        errors.append(f"{manifest.snapshot_id}:{manifest_path}: {exc}")
-
-        malformed = self.object_store.iter_malformed_paths()
-        for path in malformed:
-            errors.append(f"Malformed object path: {path}")
-
-        all_objects = set(self.object_store.iter_hashes())
-        orphaned = all_objects - referenced
-        if orphaned:
-            warnings.append(f"{len(orphaned)} orphan blob(s) found")
-
-        return CheckResult(
-            ok=not errors,
-            errors=errors,
-            warnings=warnings,
-            snapshot_count=snapshot_count,
-            object_count=len(all_objects),
-            referenced_object_count=len(referenced),
-            orphan_object_count=len(orphaned),
-        )
+    def check(self, break_lock: bool = False, repair: bool = False) -> CheckResult:
+        self._ensure_repo_paths()
+        with RepositoryLock(self.lock_path, break_lock=break_lock):
+            return check_repository(self, repair=repair)
 
     def prune(
         self,
@@ -261,9 +222,14 @@ class Repository:
 
             if not dry_run:
                 for manifest in to_delete:
-                    self.manifest_store.path_for(manifest.snapshot_id).unlink(missing_ok=True)
+                    self.manifest_store.delete(manifest.snapshot_id)
+                fsync_directory(self.snapshots_dir)
 
-            gc_result = self._gc_unlocked(dry_run=dry_run) if run_gc else None
+            gc_result = (
+                self._gc_unlocked(dry_run=dry_run, manifests=kept)
+                if run_gc
+                else None
+            )
 
             return PruneResult(
                 deleted_snapshots=[manifest.snapshot_id for manifest in to_delete],
@@ -272,41 +238,22 @@ class Repository:
                 gc_result=gc_result,
             )
 
-    def gc(self, dry_run: bool = False, break_lock: bool = False) -> GCResult:
+    def gc(self, dry_run: bool = False, aggressive: bool = False, break_lock: bool = False) -> GCResult:
         self._ensure_initialized()
         with RepositoryLock(self.lock_path, break_lock=break_lock):
-            return self._gc_unlocked(dry_run=dry_run)
+            return self._gc_unlocked(dry_run=dry_run, aggressive=aggressive)
 
-    def _gc_unlocked(self, dry_run: bool = False) -> GCResult:
-        referenced: set[str] = set()
-        for manifest in self.manifest_store.list_manifests():
-            for entry in manifest.files.values():
-                if entry.type == "file":
-                    referenced.update(file_blob_hashes(entry))
-
-        all_hashes = set(self.object_store.iter_hashes())
-        garbage = sorted(all_hashes - referenced)
-        kept = sorted(all_hashes & referenced)
-        bytes_deleted = 0
-
-        if not dry_run:
-            for hash_hex in garbage:
-                path = self.object_store.get_path(hash_hex)
-                try:
-                    bytes_deleted += path.stat().st_size
-                except OSError:
-                    pass
-                path.unlink(missing_ok=True)
-                try:
-                    path.parent.rmdir()
-                except OSError:
-                    pass
-
-        return GCResult(
-            deleted_blobs=garbage,
-            kept_blobs=kept,
+    def _gc_unlocked(
+        self,
+        dry_run: bool = False,
+        manifests: list[Manifest] | None = None,
+        aggressive: bool = False,
+    ) -> GCResult:
+        return gc_unlocked(
+            self,
             dry_run=dry_run,
-            bytes_deleted=bytes_deleted,
+            manifests=manifests,
+            aggressive=aggressive,
         )
 
     def _resolve_snapshot(self, snapshot_id: str) -> Manifest:
@@ -321,6 +268,16 @@ class Repository:
         return self.manifest_store.load(snapshot_id)
 
     def _ensure_initialized(self) -> None:
+        self._ensure_repo_paths()
+        try:
+            metadata = json.loads(self.repo_json.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise RepositoryError(f"Invalid repo.json: {exc}") from exc
+        errors = validate_repo_metadata(metadata)
+        if errors:
+            raise RepositoryError("; ".join(errors))
+
+    def _ensure_repo_paths(self) -> None:
         if not self.repo_json.exists():
             raise RepositoryError(f"Not a backup repository: {self.path}")
         if not self.objects_dir.exists() or not self.snapshots_dir.exists():
@@ -337,12 +294,36 @@ class Repository:
         if missing:
             raise RepositoryError("Manifest references missing blobs: " + ", ".join(missing))
 
-    def _with_repo_self_exclude(self, source: Path, excludes: list[str]) -> list[str]:
+    def _with_repo_self_exclude(self, source: Path, excludes: list[str]) -> tuple[list[str], list[str]]:
+        """Auto-exclude the repository directory when it lives inside the source tree.
+
+        If ``source`` is the repository itself, callers must reject the backup
+        earlier via ``_validate_backup_source``. When the repository is a strict
+        descendant of ``source`` (for example ``project/.mybackup`` while backing
+        up ``project/``), append the relative repo path to ``excludes`` and
+        return a warning so operators know the backup skipped repository data.
+        """
+        warnings: list[str] = []
         try:
             repo_relative = self.path.resolve().relative_to(source.resolve())
         except ValueError:
-            return list(excludes)
+            return list(excludes), warnings
 
         if str(repo_relative) in ("", "."):
-            return list(excludes)
-        return [*excludes, repo_relative.as_posix()]
+            raise RepositoryError("source must not be the repository directory")
+        warnings.append(
+            f"repository at {repo_relative.as_posix()} is inside the source; "
+            "it was added to --exclude automatically"
+        )
+        return [*excludes, repo_relative.as_posix()], warnings
+
+    def _validate_backup_source(self, source: Path) -> None:
+        source_resolved = source.resolve()
+        repo_resolved = self.path.resolve()
+        if source_resolved == repo_resolved:
+            raise RepositoryError("source must not be the repository directory")
+        try:
+            source_resolved.relative_to(repo_resolved)
+        except ValueError:
+            return
+        raise RepositoryError("source must not be inside the repository directory")

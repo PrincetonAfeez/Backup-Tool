@@ -2,6 +2,7 @@
 
 from hashlib import sha256
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -12,10 +13,12 @@ from backup_tool.chunking import (
     restore_file_content,
     store_file,
     verify_file_content,
+    verify_file_entry,
 )
-from backup_tool.errors import HashError, IntegrityError, StoreError
+from backup_tool.errors import IntegrityError, ManifestError, StoreError
 from backup_tool.manifest import FileEntry
 from backup_tool.object_store import ObjectStore
+from tests.conftest import manifest_hash
 
 
 @pytest.fixture
@@ -27,9 +30,12 @@ def store(tmp_path: Path) -> ObjectStore:
 
 def test_file_blob_hashes_branches():
     assert file_blob_hashes(FileEntry(type="symlink", target="x")) == []
-    assert file_blob_hashes(FileEntry(type="file", hash="h")) == ["h"]
-    assert file_blob_hashes(FileEntry(type="file", hash="h", chunks=("c1",))) == ["c1"]
-    assert file_blob_hashes(FileEntry(type="file")) == []
+    assert file_blob_hashes(FileEntry(type="file", hash=manifest_hash("h"))) == [manifest_hash("h")]
+    assert file_blob_hashes(FileEntry(type="file", hash=manifest_hash("h"), chunks=(manifest_hash("c1"),))) == [
+        manifest_hash("c1")
+    ]
+    with pytest.raises(ManifestError):
+        FileEntry(type="file")
 
 
 def test_store_small_file_whole(store: ObjectStore, tmp_path: Path):
@@ -100,12 +106,24 @@ def test_verify_and_restore_chunked_file(store: ObjectStore, tmp_path: Path):
 
 def test_verify_file_content_false_cases(store: ObjectStore):
     assert verify_file_content(store, FileEntry(type="symlink", target="x")) is False
-    assert verify_file_content(store, FileEntry(type="file")) is False
+    assert verify_file_content(store, SimpleNamespace(type="file", hash=None, chunks=None)) is False
+
+
+def test_verify_file_entry_distinguishes_missing_and_mismatch(store: ObjectStore):
+    missing_hash = manifest_hash("missing")
+    with pytest.raises(IntegrityError, match="Missing blob"):
+        verify_file_entry(store, FileEntry(type="file", hash=missing_hash, size=1))
+
+    blob = store.put_bytes(b"payload")
+    corrupt_entry = FileEntry(type="file", hash=blob.hash_hex, size=blob.size)
+    store.get_path(blob.hash_hex).write_text("bad", encoding="utf-8")
+    with pytest.raises(IntegrityError, match="Hash mismatch"):
+        verify_file_entry(store, corrupt_entry)
 
 
 def test_restore_file_content_errors(store: ObjectStore, tmp_path: Path):
     entry = FileEntry(type="file", hash=sha256(b"x").hexdigest())
     with pytest.raises(StoreError, match="missing hash"):
-        restore_file_content(store, FileEntry(type="file"), tmp_path / "x")
+        restore_file_content(store, SimpleNamespace(type="file", hash=None), tmp_path / "x")
     with pytest.raises(IntegrityError, match="Missing blob"):
         restore_file_content(store, entry, tmp_path / "x")

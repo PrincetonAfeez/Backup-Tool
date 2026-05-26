@@ -8,13 +8,13 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
 
 from backup_tool import __version__
 from backup_tool.cli import _print_backup_summary, _print_diff, build_parser, main
 from backup_tool.diff import DiffResult
-from backup_tool.errors import BackupToolError, IntegrityError, LockError
+from backup_tool.errors import IntegrityError, LockError
 from backup_tool.repository import Repository
+from tests.conftest import skip_skip_me
 
 
 def test_build_parser_parses_subcommands():
@@ -37,6 +37,8 @@ def test_cli_init_and_smoke(repo_path: Path, source_dir: Path, tmp_path: Path):
     assert main(["init", "--repo", str(repo_path)]) == 0
     assert main(["backup", str(source_dir), "--repo", str(repo_path)]) == 0
     assert main(["list", "--repo", str(repo_path)]) == 0
+    assert main(["info", "--repo", str(repo_path)]) == 0
+    assert main(["show", "latest", "--repo", str(repo_path)]) == 0
     assert main(["verify", "latest", "--repo", str(repo_path)]) == 0
     assert main(["restore", "latest", "--repo", str(repo_path), "--to", str(restore)]) == 0
     assert (restore / "a.txt").read_text(encoding="utf-8") == "hello"
@@ -60,10 +62,18 @@ def test_cli_list_marks_latest(repo: Repository, source_dir: Path, repo_path: Pa
     assert lines[-1].startswith("* ")
 
 
-def test_cli_strict_aborts(skip_read_patch, repo_path: Path, source_dir: Path):
+def test_cli_strict_aborts(monkeypatch, repo_path: Path, source_dir: Path):
     (source_dir / "keep.txt").write_text("keep", encoding="utf-8")
     (source_dir / "skip-me.txt").write_text("skip", encoding="utf-8")
     main(["init", "--repo", str(repo_path)])
+    original = Repository.backup
+
+    def backup_with_skip(self, source, skip_predicate=None, **kwargs):
+        if skip_predicate is None:
+            skip_predicate = skip_skip_me
+        return original(self, source, skip_predicate=skip_predicate, **kwargs)
+
+    monkeypatch.setattr(Repository, "backup", backup_with_skip)
     stderr = io.StringIO()
     with redirect_stderr(stderr):
         code = main(["backup", str(source_dir), "--repo", str(repo_path), "--strict"])
@@ -71,10 +81,18 @@ def test_cli_strict_aborts(skip_read_patch, repo_path: Path, source_dir: Path):
     assert "Backup aborted" in stderr.getvalue()
 
 
-def test_cli_partial_backup_warning(skip_read_patch, repo_path: Path, source_dir: Path):
+def test_cli_partial_backup_warning(monkeypatch, repo_path: Path, source_dir: Path):
     (source_dir / "keep.txt").write_text("keep", encoding="utf-8")
     (source_dir / "skip-me.txt").write_text("skip", encoding="utf-8")
     main(["init", "--repo", str(repo_path)])
+    original = Repository.backup
+
+    def backup_with_skip(self, source, skip_predicate=None, **kwargs):
+        if skip_predicate is None:
+            skip_predicate = skip_skip_me
+        return original(self, source, skip_predicate=skip_predicate, **kwargs)
+
+    monkeypatch.setattr(Repository, "backup", backup_with_skip)
     stderr = io.StringIO()
     with redirect_stderr(stderr):
         code = main(["backup", str(source_dir), "--repo", str(repo_path)])
@@ -139,11 +157,30 @@ def test_cli_verify_failure(repo: Repository, source_dir: Path, repo_path: Path)
 
 
 def test_cli_gc_dry_run(repo: Repository, repo_path: Path):
+    orphan = repo.object_store.put_bytes(b"orphan-bytes")
     stdout = io.StringIO()
     with redirect_stdout(stdout):
         code = main(["gc", "--repo", str(repo_path), "--dry-run"])
     assert code == 0
-    assert "Would delete" in stdout.getvalue()
+    output = stdout.getvalue()
+    assert "Would delete" in output
+    assert f"bytes={len(b'orphan-bytes')}" in output
+    assert repo.object_store.exists(orphan.hash_hex)
+
+
+def test_cli_dry_run_backup_with_skipped_returns_zero(monkeypatch, repo_path: Path, source_dir: Path):
+    (source_dir / "keep.txt").write_text("keep", encoding="utf-8")
+    (source_dir / "skip-me.txt").write_text("skip", encoding="utf-8")
+    main(["init", "--repo", str(repo_path)])
+    original = Repository.backup
+
+    def backup_with_skip(self, source, skip_predicate=None, **kwargs):
+        if skip_predicate is None:
+            skip_predicate = skip_skip_me
+        return original(self, source, skip_predicate=skip_predicate, **kwargs)
+
+    monkeypatch.setattr(Repository, "backup", backup_with_skip)
+    assert main(["backup", str(source_dir), "--repo", str(repo_path), "--dry-run"]) == 0
 
 
 def test_print_helpers(capsys):

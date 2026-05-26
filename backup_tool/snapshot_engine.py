@@ -5,18 +5,29 @@ from __future__ import annotations
 import fnmatch
 import os
 import shutil
+import stat
 import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from secrets import token_hex
 
-from backup_tool.chunking import restore_file_content, store_file
+from backup_tool.chunking import hash_file_content, restore_file_content, store_file
 from backup_tool.diff import DiffResult, classify_entries
 from backup_tool.errors import HashError, ManifestError, RestoreError, StoreError
 from backup_tool.manifest import FileEntry, Manifest
+from backup_tool.metadata import restore_entry_metadata
 from backup_tool.object_store import ObjectStore
-from backup_tool.paths import normalize_manifest_path, safe_restore_path, source_relative_path
+from backup_tool.paths import (
+    assert_safe_symlink_target,
+    normalize_manifest_path,
+    safe_restore_path,
+    source_relative_path,
+    validate_exclude_pattern,
+)
+
+SkipPredicate = Callable[[Path, str], str | None]
 
 
 @dataclass(frozen=True)
@@ -31,11 +42,12 @@ class SkippedItem:
 @dataclass
 class SnapshotResult:
     manifest: Manifest | None
-    diff: DiffResult
+    diff: DiffResult | None
     committed: bool
     dry_run: bool
     skipped: list[SkippedItem] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
     stale_lock_cleared_pid: int | None = None
 
     @property
@@ -51,6 +63,7 @@ class RestoreResult:
     destination: Path
     restored_files: int
     restored_symlinks: int
+    restored_directories: int = 0
     warnings: list[str] = field(default_factory=list)
 
 
@@ -65,6 +78,7 @@ class SnapshotEngine:
         excludes: list[str] | None = None,
         dry_run: bool = False,
         strict: bool = False,
+        skip_predicate: SkipPredicate = None,
     ) -> SnapshotResult:
         source = source.resolve()
         if not source.exists() or not source.is_dir():
@@ -78,20 +92,47 @@ class SnapshotEngine:
         new_bytes_stored = 0
         total_bytes_scanned = 0
 
-        for file_path, manifest_path, is_symlink in self._walk_source(source, excludes):
-            if is_symlink:
+        walk_entries, walk_skipped = self._walk_source(source, excludes)
+        skipped.extend(walk_skipped)
+        errors.extend(item.reason for item in walk_skipped)
+
+        for file_path, manifest_path, entry_kind in walk_entries:
+            if entry_kind == "directory":
+                try:
+                    stat_result = file_path.lstat()
+                    files[manifest_path] = FileEntry(
+                        type="directory",
+                        mode=stat.S_IMODE(stat_result.st_mode),
+                        mtime=stat_result.st_mtime_ns / 1_000_000_000,
+                    )
+                except OSError as exc:
+                    item = SkippedItem(manifest_path, f"could not read directory: {exc}")
+                    skipped.append(item)
+                    errors.append(item.reason)
+                continue
+
+            if entry_kind == "symlink":
                 try:
                     stat_result = file_path.lstat()
                     files[manifest_path] = FileEntry(
                         type="symlink",
                         target=os.readlink(file_path),
-                        mode=stat_result.st_mode,
+                        mode=stat.S_IMODE(stat_result.st_mode),
+                        is_dir_symlink=file_path.is_dir(),
                     )
                 except OSError as exc:
                     item = SkippedItem(manifest_path, f"could not read symlink: {exc}")
                     skipped.append(item)
                     errors.append(item.reason)
                 continue
+
+            if skip_predicate is not None:
+                skip_reason = skip_predicate(file_path, manifest_path)
+                if skip_reason is not None:
+                    item = SkippedItem(manifest_path, skip_reason)
+                    skipped.append(item)
+                    errors.append(skip_reason)
+                    continue
 
             try:
                 entry, stored_new_blob, bytes_stored = self._read_regular_file(
@@ -168,6 +209,7 @@ class SnapshotEngine:
         destination: Path,
         file_path: str | None = None,
         force: bool = False,
+        safe_symlinks: bool = False,
     ) -> RestoreResult:
         destination = destination.resolve()
         selected = self._select_restore_entries(snapshot, file_path)
@@ -180,7 +222,9 @@ class SnapshotEngine:
 
         restored_files = 0
         restored_symlinks = 0
+        restored_directories = 0
         warnings: list[str] = []
+        old_path: Path | None = None
 
         try:
             for manifest_path, entry in selected.items():
@@ -194,60 +238,89 @@ class SnapshotEngine:
                         restore_file_content(self.object_store, entry, target)
                     except (HashError, StoreError) as exc:
                         raise RestoreError(str(exc)) from exc
-                    self._restore_metadata(target, entry, warnings)
+                    restore_entry_metadata(target, entry, warnings)
                     restored_files += 1
                 elif entry.type == "symlink":
                     if entry.target is None:
                         raise RestoreError(f"Symlink entry missing target: {manifest_path}")
+                    if safe_symlinks:
+                        assert_safe_symlink_target(entry.target, manifest_path=manifest_path)
                     try:
-                        os.symlink(entry.target, target)
+                        target_is_directory = bool(entry.is_dir_symlink) if os.name == "nt" else False
+                        os.symlink(entry.target, target, target_is_directory=target_is_directory)
                         restored_symlinks += 1
                     except OSError as exc:
                         warnings.append(f"Could not restore symlink {manifest_path}: {exc}")
+                elif entry.type == "directory":
+                    target.mkdir(parents=True, exist_ok=True)
+                    restore_entry_metadata(target, entry, warnings)
+                    restored_directories += 1
                 else:
                     raise RestoreError(f"Unsupported entry type: {entry.type}")
 
             if destination.exists():
-                if destination.is_dir():
-                    destination.rmdir()
-                else:
-                    destination.unlink()
+                old_path = destination.parent / f"{destination.name}.old"
+                if old_path.exists():
+                    if old_path.is_dir():
+                        shutil.rmtree(old_path)
+                    else:
+                        old_path.unlink()
+                os.replace(destination, old_path)
             os.replace(temp_path, destination)
+            temp_path = destination
         except Exception:
-            shutil.rmtree(temp_path, ignore_errors=True)
+            if temp_path.exists() and temp_path != destination:
+                shutil.rmtree(temp_path, ignore_errors=True)
+            if old_path is not None and old_path.exists() and not destination.exists():
+                os.replace(old_path, destination)
             raise
+        finally:
+            if old_path is not None and old_path.exists():
+                if old_path.is_dir():
+                    shutil.rmtree(old_path, ignore_errors=True)
+                else:
+                    old_path.unlink(missing_ok=True)
 
         return RestoreResult(
             snapshot_id=snapshot.snapshot_id,
             destination=destination,
             restored_files=restored_files,
             restored_symlinks=restored_symlinks,
+            restored_directories=restored_directories,
             warnings=warnings,
         )
 
     def _read_regular_file(self, path: Path, dry_run: bool) -> tuple[FileEntry | None, int, int]:
-        attempts = 2
-        for _ in range(attempts):
+        prev_hash: str | None = None
+        for _ in range(2):
             before = path.stat()
-            try:
-                stored = store_file(self.object_store, path, dry_run=dry_run)
-            except (HashError, StoreError) as exc:
-                raise exc
+            hashed = hash_file_content(path)
             after = path.stat()
 
-            if before.st_size == after.st_size and before.st_mtime_ns == after.st_mtime_ns:
+            stat_stable = (
+                before.st_size == after.st_size
+                and before.st_mtime_ns == after.st_mtime_ns
+            )
+            if not stat_stable:
+                prev_hash = None
+                continue
+
+            if prev_hash is not None and prev_hash == hashed.hash_hex:
+                stored = store_file(self.object_store, path, dry_run=dry_run)
                 return (
                     FileEntry(
                         type="file",
                         hash=stored.hash_hex,
                         size=stored.size,
-                        mtime=after.st_mtime,
-                        mode=after.st_mode,
+                        mtime=after.st_mtime_ns / 1_000_000_000,
+                        mode=stat.S_IMODE(after.st_mode),
                         chunks=stored.chunks,
                     ),
                     stored.new_blob_count,
                     stored.bytes_stored,
                 )
+
+            prev_hash = hashed.hash_hex
 
         return None, 0, 0
 
@@ -255,11 +328,17 @@ class SnapshotEngine:
         self,
         source: Path,
         excludes: list[str],
-    ) -> list[tuple[Path, str, bool]]:
-        found: list[tuple[Path, str, bool]] = []
+    ) -> tuple[list[tuple[Path, str, str]], list[SkippedItem]]:
+        found: list[tuple[Path, str, str]] = []
+        skipped: list[SkippedItem] = []
 
         for root, dirnames, filenames in os.walk(source, topdown=True, followlinks=False):
             root_path = Path(root)
+
+            if root_path != source:
+                manifest_path = source_relative_path(source, root_path)
+                if not self._is_excluded(manifest_path, excludes):
+                    found.append((root_path, manifest_path, "directory"))
 
             kept_dirs: list[str] = []
             for dirname in dirnames:
@@ -267,8 +346,18 @@ class SnapshotEngine:
                 manifest_path = source_relative_path(source, path)
                 if self._is_excluded(manifest_path, excludes):
                     continue
+                try:
+                    stat_result = path.lstat()
+                except OSError:
+                    kept_dirs.append(dirname)
+                    continue
                 if path.is_symlink():
-                    found.append((path, manifest_path, True))
+                    found.append((path, manifest_path, "symlink"))
+                    continue
+                if not stat.S_ISDIR(stat_result.st_mode):
+                    skipped.append(
+                        SkippedItem(manifest_path, "unsupported file type"),
+                    )
                     continue
                 kept_dirs.append(dirname)
             dirnames[:] = kept_dirs
@@ -278,17 +367,31 @@ class SnapshotEngine:
                 manifest_path = source_relative_path(source, path)
                 if self._is_excluded(manifest_path, excludes):
                     continue
-                found.append((path, manifest_path, path.is_symlink()))
+                try:
+                    stat_result = path.lstat()
+                except OSError as exc:
+                    skipped.append(
+                        SkippedItem(manifest_path, f"could not stat file: {exc}"),
+                    )
+                    continue
+                if path.is_symlink():
+                    found.append((path, manifest_path, "symlink"))
+                elif stat.S_ISREG(stat_result.st_mode):
+                    found.append((path, manifest_path, "file"))
+                else:
+                    skipped.append(
+                        SkippedItem(manifest_path, "unsupported file type"),
+                    )
 
-        return sorted(found, key=lambda item: item[1])
+        return sorted(found, key=lambda item: item[1]), skipped
 
     def _is_excluded(self, manifest_path: str, patterns: list[str]) -> bool:
         name = PurePosixPath(manifest_path).name
         for pattern in patterns:
-            normalized = normalize_manifest_path(pattern) if pattern not in {"*", "**"} else pattern
+            normalized = validate_exclude_pattern(pattern) if pattern not in {"*", "**"} else pattern
             if fnmatch.fnmatch(manifest_path, normalized):
                 return True
-            if fnmatch.fnmatch(name, normalized):
+            if "/" not in normalized and fnmatch.fnmatch(name, normalized):
                 return True
             if manifest_path.startswith(normalized.rstrip("/") + "/"):
                 return True
@@ -311,31 +414,17 @@ class SnapshotEngine:
             return
 
         if destination.is_dir():
-            has_children = any(destination.iterdir())
-            if has_children and not force:
-                raise RestoreError(f"Destination is not empty: {destination}")
-            if not has_children:
+            is_empty = not any(destination.iterdir())
+            if is_empty:
                 return
-        elif not force:
-            raise RestoreError(f"Destination already exists: {destination}")
+            if force:
+                return
+            raise RestoreError(f"Destination is not empty: {destination}")
 
-        if destination.exists() and force:
-            if destination.is_dir():
-                shutil.rmtree(destination)
-            else:
-                destination.unlink()
-
-    def _restore_metadata(self, path: Path, entry: FileEntry, warnings: list[str]) -> None:
-        if entry.mode is not None:
-            try:
-                os.chmod(path, entry.mode)
-            except OSError as exc:
-                warnings.append(f"Could not restore mode for {path}: {exc}")
-        if entry.mtime is not None:
-            try:
-                os.utime(path, (entry.mtime, entry.mtime))
-            except OSError as exc:
-                warnings.append(f"Could not restore mtime for {path}: {exc}")
+        # Existing file, symlink, or other non-directory path.
+        if force:
+            return
+        raise RestoreError(f"Destination already exists: {destination}")
 
     def _new_snapshot_id(self, now: datetime) -> str:
         stamp = now.strftime("%Y-%m-%dT%H-%M-%S-%fZ")

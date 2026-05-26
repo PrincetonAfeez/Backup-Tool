@@ -2,13 +2,29 @@
 
 from __future__ import annotations
 
-import os
+from hashlib import sha256
 from pathlib import Path
 
 import pytest
 
+from backup_tool.object_store import ObjectStore
 from backup_tool.repository import Repository
-from backup_tool.snapshot_engine import SnapshotEngine
+from backup_tool.snapshot_engine import SkipPredicate, SnapshotEngine
+
+
+@pytest.fixture
+def engine(tmp_path: Path) -> SnapshotEngine:
+    objects_dir = tmp_path / "objects"
+    tmp_dir = tmp_path / "tmp"
+    store = ObjectStore(objects_dir, tmp_dir)
+    store.init()
+    return SnapshotEngine(store)
+
+
+def manifest_hash(label: str) -> str:
+    """Return a valid SHA-256 hex digest derived from a test label."""
+
+    return sha256(label.encode()).hexdigest()
 
 
 @pytest.fixture
@@ -69,15 +85,14 @@ symlink_required = pytest.mark.skipif(
     reason="symlink creation is not supported on this platform",
 )
 
-REAL_READ_REGULAR_FILE = SnapshotEngine._read_regular_file
 
-
-def read_regular_file_with_skip(engine: SnapshotEngine, path: Path, dry_run: bool):
-    if path.name == "skip-me.txt":
-        return None, 0, 0
-    return REAL_READ_REGULAR_FILE(engine, path, dry_run=dry_run)
+def skip_skip_me(_path: Path, _manifest_path: str) -> str | None:
+    if _path.name == "skip-me.txt":
+        return "file changed while being read"
+    return None
 
 
 @pytest.fixture
-def skip_read_patch(monkeypatch):
-    monkeypatch.setattr(SnapshotEngine, "_read_regular_file", read_regular_file_with_skip)
+def skip_predicate() -> SkipPredicate:
+    """Public skip seam for tests (see ``SnapshotEngine.build_snapshot``)."""
+    return skip_skip_me
