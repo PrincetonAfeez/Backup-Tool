@@ -1,0 +1,37 @@
+{
+  "$id": "https://example.com/backup-tool/schema/repo-metadata.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Schema for repo.json in Backup Tool Version 1 repositories.",
+  "properties": {
+    "chunking": {
+      "const": "fixed-1mb-blocks-above-threshold"
+    },
+    "created_at": {
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d{1,6})?Z$",
+      "type": "string"
+    },
+    "hash_algorithm": {
+      "const": "sha256"
+    },
+    "object_layout": {
+      "const": "sha256-prefix-2"
+    },
+    "storage": {
+      "const": "content-addressable"
+    },
+    "version": {
+      "const": 1
+    }
+  },
+  "required": [
+    "version",
+    "created_at",
+    "hash_algorithm",
+    "storage",
+    "object_layout",
+    "chunking"
+  ],
+  "title": "Backup Tool Repository Metadata",
+  "type": "object"
+}

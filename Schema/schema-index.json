@@ -1,0 +1,22 @@
+{
+  "project": "Backup Tool",
+  "schemas": [
+    {
+      "description": "Validates .mybackup/repo.json repository metadata.",
+      "file": "repo-metadata.schema.json"
+    },
+    {
+      "description": "Validates snapshot JSON files under .mybackup/snapshots/.",
+      "file": "manifest.schema.json"
+    },
+    {
+      "description": "Validates a single manifest file/symlink/directory entry.",
+      "file": "file-entry.schema.json"
+    },
+    {
+      "description": "Validates simple snapshot summary objects.",
+      "file": "snapshot-summary.schema.json"
+    }
+  ],
+  "version": "1"
+}

@@ -1,0 +1,95 @@
+{
+  "$id": "https://example.com/backup-tool/schema/file-entry.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Schema for one Version 1 Backup Tool manifest entry.",
+  "oneOf": [
+    {
+      "additionalProperties": false,
+      "properties": {
+        "chunks": {
+          "items": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "hash": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "mode": {
+          "maximum": 4095,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "mtime": {
+          "type": "number"
+        },
+        "size": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "type": {
+          "const": "file"
+        }
+      },
+      "required": [
+        "type",
+        "hash"
+      ],
+      "title": "Regular file entry",
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "is_dir_symlink": {
+          "type": "boolean"
+        },
+        "mode": {
+          "maximum": 4095,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "mtime": {
+          "type": "number"
+        },
+        "target": {
+          "type": "string"
+        },
+        "type": {
+          "const": "symlink"
+        }
+      },
+      "required": [
+        "type",
+        "target"
+      ],
+      "title": "Symlink entry",
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "maximum": 4095,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "mtime": {
+          "type": "number"
+        },
+        "type": {
+          "const": "directory"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "title": "Directory entry",
+      "type": "object"
+    }
+  ],
+  "title": "Backup Tool File Entry"
+}

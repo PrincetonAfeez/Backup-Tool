@@ -1,0 +1,44 @@
+{
+  "$id": "https://example.com/backup-tool/schema/snapshot-summary.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Simple schema for list/display summary data.",
+  "properties": {
+    "created_at": {
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d{1,6})?Z$",
+      "type": "string"
+    },
+    "entry_count": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "new_bytes_stored": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "snapshot_id": {
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}-\\d{2}-\\d{2}-\\d+Z_[0-9a-f]{8}$",
+      "type": "string"
+    },
+    "source": {
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "complete",
+        "partial",
+        "dry-run"
+      ]
+    }
+  },
+  "required": [
+    "snapshot_id",
+    "created_at",
+    "source",
+    "status",
+    "entry_count",
+    "new_bytes_stored"
+  ],
+  "title": "Backup Tool Snapshot Summary",
+  "type": "object"
+}
