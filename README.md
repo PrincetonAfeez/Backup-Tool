@@ -32,9 +32,10 @@ backup-tool show <snapshot> --repo <path>
 backup-tool restore <snapshot> --repo <path> --to <destination> [--file <relative-path>] [--force] [--safe-symlinks] [--break-lock]
 backup-tool diff <snapshot-a> <snapshot-b> --repo <path> [--verbose]
 backup-tool verify <snapshot> --repo <path>
-backup-tool check --repo <path>
+backup-tool check --repo <path> [--repair] [--break-lock]
 backup-tool prune --repo <path> --keep N [--dry-run] [--gc] [--break-lock]
-backup-tool gc --repo <path> [--dry-run] [--break-lock]
+backup-tool gc --repo <path> [--dry-run] [--aggressive] [--break-lock]
+backup-tool migrate manifest-digests --repo <path> [--break-lock]
 ```
 
 Mutating commands accept `--break-lock` to remove a lock file left behind by a
@@ -111,7 +112,7 @@ never modified in place; `prune` may delete old manifest files during retention.
   "skipped": [],
   "stats": {
     "changed_files": 0,
-    "file_count": 1,
+    "file_count": 3,
     "new_bytes_stored": 12,
     "new_files": 1,
     "skipped_files": 0
@@ -133,7 +134,8 @@ See [docs/adr/README.md](docs/adr/README.md) for design decisions. [ADR 0009](do
 - Manifests are never modified after commit; `prune` deletes old manifest files
   during retention.
 - `verify` detects missing blobs and hash mismatches (bit rot), not manifest
-  tampering — see ADR 0009.
+  tampering — see ADR 0009. Manifest digest sidecars catch accidental edits and
+  partial writes, not an attacker who can change both files.
 - A snapshot is committed only after referenced blobs exist.
 - Garbage collection deletes only blobs unreferenced by all surviving snapshots.
 - Manifest paths are normalized relative paths and are checked during restore.
@@ -159,8 +161,6 @@ use the `is_dir_symlink` flag recorded at backup time.
 | `__pycache__` | The `__pycache__` directory and everything under it |
 | `build/` | Paths under the `build/` directory prefix |
 | `tests/foo.py` | Only that exact path (patterns with `/` do not fall back to basename matching) |
-| `dir/*.py` | Files directly under `dir/` whose names match `*.py` |
-
 | `dir/*.py` | Files directly under `dir/` whose names match `*.py` |
 
 Patterns with `..` are rejected at the CLI with `Unsafe exclude pattern`.
@@ -199,6 +199,13 @@ This tool is intended for small, local datasets in an academic setting:
   before sorting.
 - No parallel backup, compression, or encryption.
 - No incremental mtime-only fast path (every included file is re-hashed).
+- Stable-file detection reads each accepted file up to three times: two hash
+  passes to confirm unchanged content, then one store pass. The store pass is
+  checked against the stable hash; if it diverges, the file is skipped. This is
+  correct but expensive for large trees — see ADR 0012 for future work.
+
+Manifests committed before digest sidecars were added cannot be loaded until
+you run `backup-tool migrate manifest-digests --repo <path>` once.
 
 ## Repository Layout
 
@@ -238,10 +245,10 @@ Run lint and type checks:
 
 ```powershell
 ruff check backup_tool tests
-mypy --strict --follow-imports=silent backup_tool/manifest.py
+mypy backup_tool
 ```
 
-CI installs the package with `pip install -e .`, smoke-tests `backup-tool version`, runs pytest with coverage (85% minimum), ruff, and mypy on Ubuntu and Windows for Python 3.11 and 3.12.
+CI installs the package with `pip install -e .`, smoke-tests `backup-tool version`, runs pytest with coverage (85% minimum), ruff, and mypy on `backup_tool/` on Ubuntu and Windows for Python 3.11 and 3.12.
 
 On Windows, symlink tests are skipped unless Developer Mode (or equivalent
 symlink privilege) is enabled. Ubuntu CI covers symlink backup/restore.

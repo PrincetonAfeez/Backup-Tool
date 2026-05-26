@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from backup_tool.atomic import atomic_write_json, atomic_write_text
+from backup_tool.atomic import atomic_write_text, fsync_directory
 from backup_tool.errors import ManifestError, StoreError
 from backup_tool.hashing import hash_file
 from backup_tool.object_store import validate_hash
@@ -50,6 +52,46 @@ def _validate_content_hash(hash_hex: str, *, field: str = "hash") -> str:
         raise ManifestError(f"Invalid file entry {field}: {exc}") from exc
 
 
+def _validate_optional_size(size: Any) -> int | None:
+    if size is None:
+        return None
+    if isinstance(size, bool) or not isinstance(size, int):
+        raise ManifestError("File entry size must be an integer")
+    if size < 0:
+        raise ManifestError("File entry size must be >= 0")
+    return int(size)
+
+
+def _validate_optional_mtime(mtime: Any) -> float | None:
+    if mtime is None:
+        return None
+    if isinstance(mtime, bool) or not isinstance(mtime, (int, float)):
+        raise ManifestError("File entry mtime must be numeric")
+    return float(mtime)
+
+
+def _validate_optional_mode(mode: Any) -> int | None:
+    if mode is None:
+        return None
+    if isinstance(mode, bool) or not isinstance(mode, int):
+        raise ManifestError("File entry mode must be an integer")
+    return int(mode)
+
+
+def _validate_symlink_target(target: Any) -> str:
+    if not isinstance(target, str):
+        raise ManifestError("Symlink entry target must be a string")
+    return target
+
+
+def _validate_optional_is_dir_symlink(value: Any) -> bool | None:
+    if value is None:
+        return None
+    if not isinstance(value, bool):
+        raise ManifestError("File entry is_dir_symlink must be a boolean")
+    return value
+
+
 @dataclass(frozen=True)
 class FileEntry:
     type: str
@@ -71,13 +113,29 @@ class FileEntry:
             if not self.hash:
                 raise ManifestError("File entry is missing hash")
             _validate_content_hash(self.hash)
+            if self.size is not None:
+                _validate_optional_size(self.size)
+            if self.mtime is not None:
+                _validate_optional_mtime(self.mtime)
+            if self.mode is not None:
+                _validate_optional_mode(self.mode)
             if self.chunks is not None:
                 if not self.chunks:
                     raise ManifestError("File entry chunks must be a non-empty list")
                 for index, chunk_hash in enumerate(self.chunks):
                     _validate_content_hash(chunk_hash, field=f"chunks[{index}]")
-        if self.type == "symlink" and self.target is None:
-            raise ManifestError("Symlink entry is missing target")
+        if self.type == "symlink":
+            if self.target is None:
+                raise ManifestError("Symlink entry is missing target")
+            _validate_symlink_target(self.target)
+            if self.mode is not None:
+                _validate_optional_mode(self.mode)
+            if self.is_dir_symlink is not None:
+                _validate_optional_is_dir_symlink(self.is_dir_symlink)
+        if self.type == "directory" and self.mode is not None:
+            _validate_optional_mode(self.mode)
+        if self.type == "directory" and self.mtime is not None:
+            _validate_optional_mtime(self.mtime)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "FileEntry":
@@ -100,15 +158,19 @@ class FileEntry:
         if file_hash is not None:
             file_hash = _validate_content_hash(str(file_hash))
 
+        target = None
+        if entry_type == "symlink":
+            target = _validate_symlink_target(data["target"])
+
         return cls(
             type=entry_type,
             hash=file_hash,
-            size=data.get("size"),
-            mtime=data.get("mtime"),
-            mode=data.get("mode"),
-            target=data.get("target"),
+            size=_validate_optional_size(data.get("size")),
+            mtime=_validate_optional_mtime(data.get("mtime")),
+            mode=_validate_optional_mode(data.get("mode")),
+            target=target,
             chunks=chunks,
-            is_dir_symlink=data.get("is_dir_symlink"),
+            is_dir_symlink=_validate_optional_is_dir_symlink(data.get("is_dir_symlink")),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -237,9 +299,55 @@ class ManifestStore:
         path = self.path_for(manifest.snapshot_id)
         if path.exists():
             raise ManifestError(f"Snapshot already exists: {manifest.snapshot_id}")
-        atomic_write_json(path, manifest.to_dict())
-        write_manifest_digest(path)
-        return path
+
+        sidecar = manifest_digest_path(path)
+        self.snapshots_dir.mkdir(parents=True, exist_ok=True)
+
+        fd_json, json_tmp_name = tempfile.mkstemp(
+            prefix=f".{manifest.snapshot_id}.",
+            suffix=".json.tmp",
+            dir=self.snapshots_dir,
+            text=True,
+        )
+        json_tmp = Path(json_tmp_name)
+        fd_sidecar, sidecar_tmp_name = tempfile.mkstemp(
+            prefix=f".{manifest.snapshot_id}.",
+            suffix=".sha256.tmp",
+            dir=self.snapshots_dir,
+            text=True,
+        )
+        sidecar_tmp = Path(sidecar_tmp_name)
+        committed_json = False
+        committed_sidecar = False
+
+        try:
+            text = json.dumps(manifest.to_dict(), indent=2, sort_keys=True) + "\n"
+            with os.fdopen(fd_json, "w", encoding="utf-8", newline="\n") as file:
+                file.write(text)
+                file.flush()
+                os.fsync(file.fileno())
+
+            digest = hash_file(json_tmp).hash_hex
+            with os.fdopen(fd_sidecar, "w", encoding="utf-8", newline="\n") as file:
+                file.write(f"{digest}\n")
+                file.flush()
+                os.fsync(file.fileno())
+
+            os.replace(json_tmp, path)
+            committed_json = True
+            os.replace(sidecar_tmp, sidecar)
+            committed_sidecar = True
+            fsync_directory(self.snapshots_dir)
+            return path
+        except Exception:
+            if committed_sidecar:
+                sidecar.unlink(missing_ok=True)
+            if committed_json:
+                path.unlink(missing_ok=True)
+            raise
+        finally:
+            json_tmp.unlink(missing_ok=True)
+            sidecar_tmp.unlink(missing_ok=True)
 
     def delete(self, snapshot_id: str) -> None:
         path = self.path_for(snapshot_id)
@@ -258,7 +366,21 @@ class ManifestStore:
             data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
             raise ManifestError(f"Could not load manifest {path}: {exc}") from exc
+        if not isinstance(data, dict):
+            raise ManifestError("Manifest root must be an object")
         return Manifest.from_dict(data)
+
+    def migrate_missing_digests(self) -> list[str]:
+        """Write missing digest sidecars for manifests that predate sidecar support."""
+
+        migrated: list[str] = []
+        for path in self.list_paths():
+            sidecar = manifest_digest_path(path)
+            if sidecar.exists():
+                continue
+            write_manifest_digest(path)
+            migrated.append(path.stem)
+        return migrated
 
     def list_paths(self) -> list[Path]:
         if not self.snapshots_dir.exists():

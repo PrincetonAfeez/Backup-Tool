@@ -98,7 +98,7 @@ def store_file(
     if size <= CHUNKING_THRESHOLD:
         if dry_run:
             result = hash_file(path, chunk_size=chunk_size)
-            stored_new = not store.exists(result.hash_hex)
+            stored_new = not store.has_valid_blob(result.hash_hex)
             return StoredFileInfo(
                 result.hash_hex,
                 result.size,
@@ -134,7 +134,7 @@ def store_file(
                 chunks.append(chunk_hash)
 
                 if dry_run:
-                    if not store.exists(chunk_hash):
+                    if not store.has_valid_blob(chunk_hash):
                         new_blob_count += 1
                         bytes_stored += len(data)
                     continue

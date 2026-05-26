@@ -5,7 +5,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 
+from backup_tool.errors import RepositoryError
 from backup_tool.repo_metadata import (
     CHUNKING,
     HASH_ALGORITHM,
@@ -61,3 +63,10 @@ def test_show_snapshot_returns_manifest(repo: Repository, source_dir: Path):
     assert "a.txt" in manifest.files
     assert manifest.version == 1
     assert manifest.skipped == []
+
+
+def test_repo_info_rejects_invalid_metadata(repo_path: Path):
+    Repository.init(repo_path)
+    (repo_path / "repo.json").write_text("[1, 2, 3]", encoding="utf-8")
+    with pytest.raises(RepositoryError, match="must be an object"):
+        Repository(repo_path).repo_info()

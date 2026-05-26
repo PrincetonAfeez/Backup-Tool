@@ -163,3 +163,214 @@ def test_cli_backup_accepts_absolute_exclude(repo_path: Path, source_dir: Path):
     (source_dir / "keep.txt").write_text("keep", encoding="utf-8")
     main(["init", "--repo", str(repo_path)])
     assert main(["backup", str(source_dir), "--repo", str(repo_path), "--exclude", "/etc"]) == 0
+
+
+def test_store_pass_hash_mismatch_skips_file(engine: SnapshotEngine, source_dir: Path):
+    from backup_tool.chunking import StoredFileInfo
+
+    (source_dir / "volatile.txt").write_text("stable", encoding="utf-8")
+    bad_hash = manifest_hash("wrong")
+
+    def fake_store(_store, _path, *, dry_run=False, chunk_size=1048576):
+        return StoredFileInfo(bad_hash, 6, None, 1, 6)
+
+    with patch("backup_tool.snapshot_engine.store_file", side_effect=fake_store):
+        result = engine.build_snapshot(source_dir, None)
+
+    assert "volatile.txt" not in result.manifest.files
+    assert any(item.path == "volatile.txt" for item in result.skipped)
+
+
+def test_dry_run_counts_corrupt_existing_blob_as_new(repo: Repository, source_dir: Path):
+    (source_dir / "a.txt").write_text("hello", encoding="utf-8")
+    first = repo.backup(source_dir)
+    blob_hash = first.manifest.files["a.txt"].hash
+    assert blob_hash is not None
+    repo.object_store.get_path(blob_hash).write_text("corrupt", encoding="utf-8")
+
+    dry = repo.backup(source_dir, dry_run=True)
+    assert dry.manifest.stats["new_bytes_stored"] > 0
+
+
+def test_gc_dry_run_aggressive_does_not_create_quarantine(repo: Repository):
+    hash_hex, wrong_path = _place_misplaced_blob_helper(repo, b"misplaced")
+    quarantine = repo.tmp_dir / "quarantine"
+    result = repo.gc(dry_run=True, aggressive=True)
+    assert wrong_path.exists()
+    assert not quarantine.exists()
+    assert any(hash_hex in item for item in result.quarantined_malformed)
+
+
+def _place_misplaced_blob_helper(repo: Repository, payload: bytes) -> tuple[str, Path]:
+    hash_hex = sha256(payload).hexdigest()
+    wrong_path = repo.object_store.objects_dir / "zz" / hash_hex
+    wrong_path.parent.mkdir(parents=True, exist_ok=True)
+    wrong_path.write_bytes(payload)
+    return hash_hex, wrong_path
+
+
+def test_restore_force_preserves_unrelated_old_sibling(engine: SnapshotEngine, source_dir: Path, tmp_path: Path):
+    (source_dir / "a.txt").write_text("hello", encoding="utf-8")
+    manifest = engine.build_snapshot(source_dir, None).manifest
+    destination = tmp_path / "restore"
+    destination.mkdir()
+    (destination / "precious.txt").write_text("keep", encoding="utf-8")
+    unrelated = destination.parent / ".restore-old-unrelated"
+    unrelated.write_text("unrelated data", encoding="utf-8")
+
+    engine.restore_snapshot(manifest, destination, force=True)
+
+    assert unrelated.read_text(encoding="utf-8") == "unrelated data"
+    assert (destination / "a.txt").read_text(encoding="utf-8") == "hello"
+
+
+def test_manifest_save_rolls_back_when_sidecar_write_fails(tmp_path: Path, monkeypatch):
+    import os
+
+    from backup_tool.manifest import Manifest, ManifestStore
+
+    store = ManifestStore(tmp_path)
+    store.init()
+    manifest = Manifest(
+        snapshot_id="2026-01-01T00-00-00Z_abcd1234",
+        created_at="2026-01-01T00:00:00Z",
+        source="src",
+        status="complete",
+        stats={"file_count": 0},
+        files={},
+    )
+    real_replace = os.replace
+
+    def fail_replace_sidecar(src, dst):
+        if str(dst).endswith(".sha256"):
+            raise OSError("sidecar write failed")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr("backup_tool.manifest.os.replace", fail_replace_sidecar)
+    with pytest.raises(OSError, match="sidecar write failed"):
+        store.save(manifest)
+
+    path = store.path_for(manifest.snapshot_id)
+    assert not path.exists()
+    assert not path.with_name(f"{path.name}.sha256").exists()
+
+
+def test_migrate_manifest_digests_writes_missing_sidecars(repo: Repository, source_dir: Path):
+    (source_dir / "a.txt").write_text("hello", encoding="utf-8")
+    repo.backup(source_dir)
+    path = repo.manifest_store.path_for(repo.manifest_store.latest().snapshot_id)
+    sidecar = path.with_name(f"{path.name}.sha256")
+    sidecar.unlink()
+
+    migrated = repo.migrate_manifest_digests()
+    assert path.stem in migrated
+    assert sidecar.exists()
+    assert repo.manifest_store.load(path.stem).snapshot_id == path.stem
+
+
+def test_repo_json_non_object_raises_repository_error(repo_path: Path):
+    repo_path.mkdir(parents=True, exist_ok=True)
+    (repo_path / "objects").mkdir()
+    (repo_path / "snapshots").mkdir()
+    (repo_path / "repo.json").write_text("[1, 2, 3]", encoding="utf-8")
+    with pytest.raises(RepositoryError, match="must be an object"):
+        Repository(repo_path).list_snapshots()
+
+
+def test_manifest_non_object_root_rejected(tmp_path: Path):
+    from backup_tool.manifest import ManifestStore, write_manifest_digest
+
+    store = ManifestStore(tmp_path)
+    store.init()
+    path = tmp_path / "bad.json"
+    path.write_text("[1, 2, 3]", encoding="utf-8")
+    write_manifest_digest(path)
+    with pytest.raises(ManifestError, match="root must be an object"):
+        store.load_path(path)
+
+
+@pytest.mark.parametrize(
+    "field,value,match",
+    [
+        ("size", -1, "size must be >= 0"),
+        ("size", "big", "size must be an integer"),
+        ("mtime", "not-a-number", "mtime must be numeric"),
+        ("mode", "644", "mode must be an integer"),
+        ("is_dir_symlink", "yes", "is_dir_symlink must be a boolean"),
+    ],
+)
+def test_file_entry_rejects_invalid_metadata(field, value, match):
+    payload = {"type": "file", "hash": manifest_hash("x"), field: value}
+    with pytest.raises(ManifestError, match=match):
+        FileEntry.from_dict(payload)
+
+
+def test_symlink_entry_rejects_non_string_target():
+    with pytest.raises(ManifestError, match="target must be a string"):
+        FileEntry.from_dict({"type": "symlink", "target": 123})
+
+
+def test_restore_entry_metadata_type_error_raises_restore_error(tmp_path: Path):
+    from backup_tool.metadata import restore_entry_metadata
+
+    path = tmp_path / "file.txt"
+    path.write_text("x", encoding="utf-8")
+    entry = FileEntry(type="file", hash=manifest_hash("x"), size=1, mode=0o644)
+    warnings: list[str] = []
+
+    with patch("backup_tool.metadata.os.chmod", side_effect=TypeError("bad mode")):
+        with pytest.raises(RestoreError, match="Invalid mode metadata"):
+            restore_entry_metadata(path, entry, warnings)
+
+
+def test_walk_source_skips_directory_lstat_failure(engine: SnapshotEngine, source_dir: Path):
+    nested = source_dir / "nested" / "file.txt"
+    nested.parent.mkdir(parents=True)
+    nested.write_text("inside", encoding="utf-8")
+    real_lstat = Path.lstat
+
+    def selective_lstat(self: Path):
+        if self == source_dir / "nested":
+            raise OSError(13, "permission denied")
+        return real_lstat(self)
+
+    with patch.object(Path, "lstat", selective_lstat):
+        result = engine.build_snapshot(source_dir, None)
+
+    assert "nested/file.txt" not in result.manifest.files
+    assert any(
+        item.path == "nested" and "could not stat directory" in item.reason
+        for item in result.skipped
+    )
+
+
+def test_restore_force_rollback_after_final_replace_failure(
+    engine: SnapshotEngine,
+    source_dir: Path,
+    tmp_path: Path,
+    monkeypatch,
+):
+    import os
+
+    (source_dir / "a.txt").write_text("backup", encoding="utf-8")
+    manifest = engine.build_snapshot(source_dir, None).manifest
+    destination = tmp_path / "restore"
+    destination.mkdir()
+    (destination / "precious.txt").write_text("keep me", encoding="utf-8")
+    dest_resolved = destination.resolve()
+    real_replace = os.replace
+
+    def fail_promote_staging(src, dst):
+        if (
+            Path(dst).resolve() == dest_resolved
+            and ".restore-old-" not in Path(src).name
+        ):
+            raise OSError("promote failed")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr("backup_tool.snapshot_engine.os.replace", fail_promote_staging)
+
+    with pytest.raises(OSError, match="promote failed"):
+        engine.restore_snapshot(manifest, destination, force=True)
+
+    assert (destination / "precious.txt").read_text(encoding="utf-8") == "keep me"

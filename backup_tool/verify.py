@@ -7,9 +7,8 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from backup_tool.chunking import file_blob_hashes, verify_file_entry
-from backup_tool.errors import IntegrityError, ManifestError
+from backup_tool.errors import IntegrityError, ManifestError, StoreError
 from backup_tool.manifest import MANIFEST_VERSION, Manifest
-from backup_tool.object_store import StoreError
 from backup_tool.repo_metadata import validate_repo_metadata
 
 if TYPE_CHECKING:
@@ -71,7 +70,6 @@ def check_repository(repo: Repository, *, repair: bool = False) -> CheckResult:
     referenced: set[str] = set()
     snapshot_count = 0
     quarantined_malformed: list[str] = []
-    all_objects: set[str] = set()
     orphaned: set[str] = set()
 
     try:

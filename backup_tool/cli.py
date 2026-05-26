@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 from backup_tool import __version__
+from backup_tool.diff import DiffResult
 from backup_tool.errors import BackupToolError, IntegrityError, LockError, ManifestError
 from backup_tool.paths import validate_exclude_pattern
 from backup_tool.repository import Repository
@@ -99,6 +100,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="quarantine malformed object paths before garbage collection",
     )
     _add_break_lock(gc_parser)
+
+    migrate_parser = subparsers.add_parser(
+        "migrate",
+        help="one-time repository format migrations",
+    )
+    migrate_sub = migrate_parser.add_subparsers(dest="migrate_target", required=True)
+    digest_parser = migrate_sub.add_parser(
+        "manifest-digests",
+        help="write missing .sha256 sidecars for legacy manifests",
+    )
+    digest_parser.add_argument("--repo", required=True, type=Path)
+    _add_break_lock(digest_parser)
 
     return parser
 
@@ -224,7 +237,8 @@ def main(argv: list[str] | None = None) -> int:
                 break_lock=args.break_lock,
             )
             print(
-                f"Restored {result.restored_files} file(s) and "
+                f"Restored {result.restored_files} file(s), "
+                f"{result.restored_directories} director(ies), and "
                 f"{result.restored_symlinks} symlink(s) to {result.destination}"
             )
             for warning in result.warnings:
@@ -310,6 +324,17 @@ def main(argv: list[str] | None = None) -> int:
             for item in result.quarantined_malformed:
                 print(f"quarantined: {item}")
             return 0
+
+        if args.command == "migrate":
+            if args.migrate_target == "manifest-digests":
+                migrated = repo.migrate_manifest_digests(break_lock=args.break_lock)
+                if migrated:
+                    print(f"Migrated {len(migrated)} manifest digest sidecar(s).")
+                    for snapshot_id in migrated:
+                        print(snapshot_id)
+                else:
+                    print("No manifests required digest migration.")
+                return 0
 
         parser.error(f"Unknown command: {args.command}")
         return 1

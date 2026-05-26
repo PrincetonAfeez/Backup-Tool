@@ -24,13 +24,15 @@ direct restored symlinks at sensitive absolute paths outside the restore tree.
 - Load-time schema validation rejects malformed hashes, unknown statuses, and
   unsupported hash algorithms.
 - Each committed manifest has a side-car `<snapshot>.json.sha256` digest file
-  written atomically alongside the JSON. Loads and verify reject digest mismatch.
+  committed together with the JSON. Loads and verify reject digest mismatch.
+  Sidecars detect accidental edits and partial writes; they do **not** resist a
+  party who can modify both the manifest and its sidecar.
 - `restore --safe-symlinks` rejects absolute targets and targets containing `..`.
 - Repository `check` and `verify` flag symlink entries with missing targets.
 
 ## Non-goals
 
-- Signed manifests or side-car checksum files (out of scope for this project)
+- Signed manifests or externally trusted checksums (out of scope for this project)
 - Encryption or access control on the repository directory
 
 ## Consequences
@@ -38,3 +40,7 @@ direct restored symlinks at sensitive absolute paths outside the restore tree.
 Operators must protect the repository directory filesystem permissions. For
 threat models requiring tamper-evident snapshots, wrap manifests with an external
 signing or checksum layer.
+
+Legacy repositories created before sidecar digests were introduced must run
+`backup-tool migrate manifest-digests --repo <path>` once before manifests can
+be loaded.

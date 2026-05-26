@@ -27,8 +27,10 @@ def default_repo_metadata(now: datetime | None = None) -> dict[str, object]:
     }
 
 
-def validate_repo_metadata(metadata: dict[str, object]) -> list[str]:
+def validate_repo_metadata(metadata: object) -> list[str]:
     errors: list[str] = []
+    if not isinstance(metadata, dict):
+        return ["Repository metadata root must be an object"]
     if metadata.get("version") != REPO_VERSION:
         errors.append(f"Unsupported repo version: {metadata.get('version')}")
     if metadata.get("hash_algorithm") != HASH_ALGORITHM:

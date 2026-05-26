@@ -78,7 +78,7 @@ class SnapshotEngine:
         excludes: list[str] | None = None,
         dry_run: bool = False,
         strict: bool = False,
-        skip_predicate: SkipPredicate = None,
+        skip_predicate: SkipPredicate | None = None,
     ) -> SnapshotResult:
         source = source.resolve()
         if not source.exists() or not source.is_dir():
@@ -259,12 +259,12 @@ class SnapshotEngine:
                     raise RestoreError(f"Unsupported entry type: {entry.type}")
 
             if destination.exists():
-                old_path = destination.parent / f"{destination.name}.old"
-                if old_path.exists():
-                    if old_path.is_dir():
-                        shutil.rmtree(old_path)
-                    else:
-                        old_path.unlink()
+                while True:
+                    old_path = destination.parent / (
+                        f".restore-old-{snapshot.snapshot_id}-{token_hex(4)}"
+                    )
+                    if not old_path.exists():
+                        break
                 os.replace(destination, old_path)
             os.replace(temp_path, destination)
             temp_path = destination
@@ -292,7 +292,8 @@ class SnapshotEngine:
 
     def _read_regular_file(self, path: Path, dry_run: bool) -> tuple[FileEntry | None, int, int]:
         prev_hash: str | None = None
-        for _ in range(2):
+        max_attempts = 4
+        for _ in range(max_attempts):
             before = path.stat()
             hashed = hash_file_content(path)
             after = path.stat()
@@ -307,6 +308,9 @@ class SnapshotEngine:
 
             if prev_hash is not None and prev_hash == hashed.hash_hex:
                 stored = store_file(self.object_store, path, dry_run=dry_run)
+                if stored.hash_hex != hashed.hash_hex or stored.size != hashed.size:
+                    prev_hash = None
+                    continue
                 return (
                     FileEntry(
                         type="file",
@@ -348,8 +352,10 @@ class SnapshotEngine:
                     continue
                 try:
                     stat_result = path.lstat()
-                except OSError:
-                    kept_dirs.append(dirname)
+                except OSError as exc:
+                    skipped.append(
+                        SkippedItem(manifest_path, f"could not stat directory: {exc}"),
+                    )
                     continue
                 if path.is_symlink():
                     found.append((path, manifest_path, "symlink"))

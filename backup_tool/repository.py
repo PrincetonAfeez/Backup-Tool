@@ -102,7 +102,7 @@ class Repository:
         dry_run: bool = False,
         strict: bool = False,
         break_lock: bool = False,
-        skip_predicate: SkipPredicate = None,
+        skip_predicate: SkipPredicate | None = None,
     ) -> SnapshotResult:
         self._ensure_initialized()
         self._validate_backup_source(source)
@@ -148,7 +148,7 @@ class Repository:
     def repo_info(self, break_lock: bool = False) -> RepoInfo:
         self._ensure_repo_paths()
         with RepositoryLock(self.lock_path, break_lock=break_lock):
-            metadata = json.loads(self.repo_json.read_text(encoding="utf-8"))
+            metadata = self._read_repo_metadata()
             manifests = self.manifest_store.list_manifests()
             last_backup_at = manifests[-1].created_at if manifests else None
             return RepoInfo(
@@ -243,6 +243,13 @@ class Repository:
         with RepositoryLock(self.lock_path, break_lock=break_lock):
             return self._gc_unlocked(dry_run=dry_run, aggressive=aggressive)
 
+    def migrate_manifest_digests(self, break_lock: bool = False) -> list[str]:
+        """Write missing `.sha256` sidecars for legacy manifests."""
+
+        self._ensure_initialized()
+        with RepositoryLock(self.lock_path, break_lock=break_lock):
+            return self.manifest_store.migrate_missing_digests()
+
     def _gc_unlocked(
         self,
         dry_run: bool = False,
@@ -267,15 +274,21 @@ class Repository:
             snapshot_id = snapshot_id[:-5]
         return self.manifest_store.load(snapshot_id)
 
-    def _ensure_initialized(self) -> None:
-        self._ensure_repo_paths()
+    def _read_repo_metadata(self) -> dict[str, object]:
         try:
             metadata = json.loads(self.repo_json.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
             raise RepositoryError(f"Invalid repo.json: {exc}") from exc
+        if not isinstance(metadata, dict):
+            raise RepositoryError("Repository metadata root must be an object")
         errors = validate_repo_metadata(metadata)
         if errors:
             raise RepositoryError("; ".join(errors))
+        return metadata
+
+    def _ensure_initialized(self) -> None:
+        self._ensure_repo_paths()
+        self._read_repo_metadata()
 
     def _ensure_repo_paths(self) -> None:
         if not self.repo_json.exists():

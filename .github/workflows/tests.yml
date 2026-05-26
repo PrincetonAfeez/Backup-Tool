@@ -55,4 +55,4 @@ jobs:
         run: ruff check backup_tool tests
 
       - name: Mypy
-        run: mypy --strict --follow-imports=silent backup_tool/manifest.py
+        run: mypy backup_tool

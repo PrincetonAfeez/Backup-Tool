@@ -4,8 +4,15 @@ from pathlib import Path
 
 import pytest
 
-from backup_tool.errors import ManifestError
-from backup_tool.paths import normalize_manifest_path, safe_restore_path, source_relative_path
+from backup_tool.errors import ManifestError, RestoreError
+from backup_tool.paths import (
+    assert_safe_symlink_target,
+    is_safe_symlink_target,
+    normalize_manifest_path,
+    safe_restore_path,
+    source_relative_path,
+    validate_exclude_pattern,
+)
 
 
 @pytest.mark.parametrize(
@@ -59,3 +66,50 @@ def test_safe_restore_path_rejects_unsafe_manifest_path(tmp_path: Path):
     dest.mkdir()
     with pytest.raises(ManifestError, match="Unsafe manifest path"):
         safe_restore_path(dest, "../outside.txt")
+
+
+@pytest.mark.parametrize(
+    "pattern",
+    ["../secret", "..", "foo/../bar"],
+)
+def test_validate_exclude_pattern_rejects_unsafe(pattern: str):
+    with pytest.raises(ManifestError, match="Unsafe exclude pattern"):
+        validate_exclude_pattern(pattern)
+
+
+def test_validate_exclude_pattern_accepts_safe_patterns():
+    assert validate_exclude_pattern("*.tmp") == "*.tmp"
+    assert validate_exclude_pattern("/etc") == "/etc"
+
+
+@pytest.mark.parametrize(
+    "target,expected",
+    [
+        ("relative/path", True),
+        ("./local", True),
+        ("/etc/passwd", False),
+        ("../outside", False),
+        ("C:\\Windows\\System32", False),
+        ("\\\\server\\share", False),
+        ("", False),
+    ],
+)
+def test_is_safe_symlink_target(target: str, expected: bool):
+    assert is_safe_symlink_target(target) is expected
+
+
+def test_assert_safe_symlink_target_accepts_relative():
+    assert_safe_symlink_target("notes/readme.txt", manifest_path="link.txt")
+
+
+@pytest.mark.parametrize(
+    "target,match",
+    [
+        ("/etc/shadow", "Unsafe symlink target"),
+        ("../escape", "Unsafe symlink target"),
+        ("C:\\Windows\\System32", "Unsafe symlink target"),
+    ],
+)
+def test_assert_safe_symlink_target_rejects_unsafe(target: str, match: str):
+    with pytest.raises(RestoreError, match=match):
+        assert_safe_symlink_target(target, manifest_path="link.txt")

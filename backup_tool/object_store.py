@@ -9,10 +9,10 @@ import time
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
-from typing import BinaryIO
+from typing import BinaryIO, cast
 
 from backup_tool.atomic import fsync_directory
-from backup_tool.errors import IntegrityError, StoreError
+from backup_tool.errors import HashError, IntegrityError, StoreError
 from backup_tool.hashing import DEFAULT_CHUNK_SIZE, hash_file
 
 
@@ -54,6 +54,11 @@ class ObjectStore:
 
     def exists(self, hash_hex: str) -> bool:
         return self.get_path(hash_hex).is_file()
+
+    def has_valid_blob(self, hash_hex: str) -> bool:
+        """Return True when a blob file exists and matches its content hash."""
+
+        return self._existing_blob_valid(hash_hex)
 
     def _existing_blob_valid(self, hash_hex: str) -> bool:
         final_path = self.get_path(hash_hex)
@@ -133,7 +138,7 @@ class ObjectStore:
     def open_blob(self, hash_hex: str, mode: str = "rb") -> BinaryIO:
         if "b" not in mode:
             raise StoreError("Blobs must be opened in binary mode")
-        return self.get_path(hash_hex).open(mode)
+        return cast(BinaryIO, self.get_path(hash_hex).open(mode))
 
     def verify_blob(self, hash_hex: str) -> bool:
         hash_hex = validate_hash(hash_hex)
@@ -142,7 +147,7 @@ class ObjectStore:
             raise IntegrityError(f"Missing blob: {hash_hex}")
         try:
             return hash_file(path).hash_hex == hash_hex
-        except OSError as exc:
+        except HashError as exc:
             raise StoreError(f"Could not read blob {hash_hex}: {exc}") from exc
 
     def malformed_path_hash(self, path: Path) -> str | None:
@@ -159,7 +164,6 @@ class ObjectStore:
     ) -> list[tuple[str, str | None]]:
         """Move malformed object paths into quarantine."""
 
-        quarantine_dir.mkdir(parents=True, exist_ok=True)
         quarantined: list[tuple[str, str | None]] = []
 
         for path in self.iter_malformed_paths():
@@ -167,6 +171,7 @@ class ObjectStore:
             label = hash_hex or "invalid-name"
             destination = quarantine_dir / f"{label}__{path.name}"
             if not dry_run:
+                quarantine_dir.mkdir(parents=True, exist_ok=True)
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 shutil.move(str(path), str(destination))
             quarantined.append((str(path), hash_hex))

@@ -34,3 +34,8 @@ def test_validate_repo_metadata_reports_all_mismatches():
         }
     )
     assert len(errors) == 5
+
+
+def test_validate_repo_metadata_rejects_non_object_root():
+    errors = validate_repo_metadata([])
+    assert errors == ["Repository metadata root must be an object"]
