@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "backup-tool"
+version = "0.1.0"
+description = "A local content-addressable backup tool with immutable JSON snapshots."
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "Backup Tool Student" }]
+dependencies = []
+
+[project.scripts]
+backup-tool = "backup_tool.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["backup_tool*"]
