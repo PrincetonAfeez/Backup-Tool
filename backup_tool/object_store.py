@@ -14,6 +14,7 @@ from typing import BinaryIO, cast
 from backup_tool.atomic import fsync_directory
 from backup_tool.errors import HashError, IntegrityError, StoreError
 from backup_tool.hashing import DEFAULT_CHUNK_SIZE, hash_file
+from backup_tool.staging import validate_staging_snapshot_id
 
 
 DEFAULT_TMP_MAX_AGE_SECONDS = 24 * 3600
@@ -43,17 +44,86 @@ class ObjectStore:
     def __init__(self, objects_dir: Path, tmp_dir: Path | None = None):
         self.objects_dir = objects_dir
         self.tmp_dir = tmp_dir or objects_dir.parent / "tmp"
+        self._active_staging: str | None = None
 
     def init(self) -> None:
         self.objects_dir.mkdir(parents=True, exist_ok=True)
         self.tmp_dir.mkdir(parents=True, exist_ok=True)
+
+    def staging_root(self, snapshot_id: str) -> Path:
+        validate_staging_snapshot_id(snapshot_id)
+        return self.tmp_dir / "staging" / snapshot_id
+
+    def staging_path(self, hash_hex: str, snapshot_id: str | None = None) -> Path:
+        hash_hex = validate_hash(hash_hex)
+        sid = snapshot_id or self._active_staging
+        if sid is None:
+            raise StoreError("No active staging session")
+        return self.staging_root(sid) / hash_hex[:2] / hash_hex
+
+    def begin_staging(self, snapshot_id: str) -> None:
+        validate_staging_snapshot_id(snapshot_id)
+        self._active_staging = snapshot_id
+        self.staging_root(snapshot_id).mkdir(parents=True, exist_ok=True)
+
+    def discard_staging(self, snapshot_id: str | None = None) -> None:
+        sid = snapshot_id or self._active_staging
+        if sid is None:
+            return
+        shutil.rmtree(self.staging_root(sid), ignore_errors=True)
+        if self._active_staging == sid:
+            self._active_staging = None
+
+    def promote_staging(self, snapshot_id: str | None = None) -> None:
+        sid = snapshot_id or self._active_staging
+        if sid is None:
+            return
+        root = self.staging_root(sid)
+        if root.exists():
+            for path in root.rglob("*"):
+                if not path.is_file():
+                    continue
+                try:
+                    hash_hex = validate_hash(path.name)
+                except StoreError:
+                    continue
+                if path.parent.name != hash_hex[:2]:
+                    continue
+                final_path = self.get_path(hash_hex)
+                if final_path.exists() and self._existing_blob_valid(hash_hex):
+                    path.unlink(missing_ok=True)
+                    continue
+                final_path.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(path, final_path)
+                fsync_directory(final_path.parent)
+            shutil.rmtree(root, ignore_errors=True)
+        if self._active_staging == sid:
+            self._active_staging = None
+
+    def has_staged_blob(self, hash_hex: str) -> bool:
+        if self._active_staging is None:
+            return False
+        return self.staging_path(hash_hex).is_file()
 
     def get_path(self, hash_hex: str) -> Path:
         hash_hex = validate_hash(hash_hex)
         return self.objects_dir / hash_hex[:2] / hash_hex
 
     def exists(self, hash_hex: str) -> bool:
-        return self.get_path(hash_hex).is_file()
+        hash_hex = validate_hash(hash_hex)
+        if self.get_path(hash_hex).is_file():
+            return True
+        return self.has_staged_blob(hash_hex)
+
+    def _write_target_path(self, hash_hex: str) -> Path:
+        if self._active_staging is not None:
+            return self.staging_path(hash_hex)
+        return self.get_path(hash_hex)
+
+    def _blob_already_stored(self, hash_hex: str) -> bool:
+        if self._existing_blob_valid(hash_hex):
+            return True
+        return self.has_staged_blob(hash_hex)
 
     def has_valid_blob(self, hash_hex: str) -> bool:
         """Return True when a blob file exists and matches its content hash."""
@@ -71,10 +141,10 @@ class ObjectStore:
 
     def put_bytes(self, data: bytes) -> BlobInfo:
         hash_hex = sha256(data).hexdigest()
-        final_path = self.get_path(hash_hex)
-        if final_path.exists() and self._existing_blob_valid(hash_hex):
+        if self._blob_already_stored(hash_hex):
             return BlobInfo(hash_hex, len(data), False, 0)
 
+        final_path = self._write_target_path(hash_hex)
         final_path.parent.mkdir(parents=True, exist_ok=True)
         self.tmp_dir.mkdir(parents=True, exist_ok=True)
         fd, temp_name = tempfile.mkstemp(prefix=".blob.", suffix=".tmp", dir=self.tmp_dir)
@@ -115,8 +185,8 @@ class ObjectStore:
                 os.fsync(dst.fileno())
 
             hash_hex = digest.hexdigest()
-            final_path = self.get_path(hash_hex)
-            if final_path.exists() and self._existing_blob_valid(hash_hex):
+            final_path = self._write_target_path(hash_hex)
+            if self._blob_already_stored(hash_hex):
                 temp_path.unlink(missing_ok=True)
                 return BlobInfo(hash_hex, size, False, 0)
 
@@ -169,7 +239,8 @@ class ObjectStore:
         for path in self.iter_malformed_paths():
             hash_hex = self.malformed_path_hash(path)
             label = hash_hex or "invalid-name"
-            destination = quarantine_dir / f"{label}__{path.name}"
+            path_key = sha256(str(path).encode()).hexdigest()[:8]
+            destination = quarantine_dir / f"{label}__{path_key}__{path.name}"
             if not dry_run:
                 quarantine_dir.mkdir(parents=True, exist_ok=True)
                 destination.parent.mkdir(parents=True, exist_ok=True)

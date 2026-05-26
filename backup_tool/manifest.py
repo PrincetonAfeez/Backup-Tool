@@ -14,12 +14,31 @@ from backup_tool.errors import ManifestError, StoreError
 from backup_tool.hashing import hash_file
 from backup_tool.object_store import validate_hash
 from backup_tool.paths import normalize_manifest_path
+from backup_tool.staging import (
+    validate_created_at,
+    validate_manifest_stats,
+    validate_skipped_items,
+    validate_snapshot_id,
+)
 
 
 MANIFEST_VERSION = 1
 MANIFEST_HASH_ALGORITHM = "sha256"
 MANIFEST_STATUSES = frozenset({"complete", "partial", "dry-run"})
 FILE_ENTRY_TYPES = frozenset({"file", "symlink", "directory"})
+MAX_FILE_MODE = 0o7777
+
+IRRELEVANT_ENTRY_FIELDS: dict[str, frozenset[str]] = {
+    "file": frozenset({"target", "is_dir_symlink"}),
+    "symlink": frozenset({"hash", "size", "chunks"}),
+    "directory": frozenset({"hash", "size", "chunks", "target", "is_dir_symlink"}),
+}
+
+
+@dataclass(frozen=True)
+class MigrateDigestResult:
+    migrated: list[str]
+    skipped: list[str]
 
 
 def manifest_digest_path(manifest_path: Path) -> Path:
@@ -75,7 +94,29 @@ def _validate_optional_mode(mode: Any) -> int | None:
         return None
     if isinstance(mode, bool) or not isinstance(mode, int):
         raise ManifestError("File entry mode must be an integer")
+    if mode < 0 or mode > MAX_FILE_MODE:
+        raise ManifestError(f"File entry mode must be between 0 and {MAX_FILE_MODE}")
     return int(mode)
+
+
+def _reject_irrelevant_entry_fields(entry_type: str, data: dict[str, Any]) -> None:
+    for key in IRRELEVANT_ENTRY_FIELDS.get(entry_type, frozenset()):
+        if key not in data:
+            continue
+        if data[key] is None:
+            continue
+        raise ManifestError(f"{entry_type} entry must not include {key}")
+
+
+def _reject_irrelevant_entry_values(entry: "FileEntry") -> None:
+    data = {
+        "hash": entry.hash,
+        "size": entry.size,
+        "chunks": entry.chunks,
+        "target": entry.target,
+        "is_dir_symlink": entry.is_dir_symlink,
+    }
+    _reject_irrelevant_entry_fields(entry.type, data)
 
 
 def _validate_symlink_target(target: Any) -> str:
@@ -109,6 +150,7 @@ class FileEntry:
     def _validate(self) -> None:
         if self.type not in FILE_ENTRY_TYPES:
             raise ManifestError(f"Unsupported file entry type: {self.type}")
+        _reject_irrelevant_entry_values(self)
         if self.type == "file":
             if not self.hash:
                 raise ManifestError("File entry is missing hash")
@@ -146,6 +188,8 @@ class FileEntry:
             raise ManifestError("File entry is missing hash")
         if entry_type == "symlink" and "target" not in data:
             raise ManifestError("Symlink entry is missing target")
+
+        _reject_irrelevant_entry_fields(entry_type, data)
 
         raw_chunks = data.get("chunks")
         chunks: tuple[str, ...] | None = None
@@ -193,11 +237,11 @@ class FileEntry:
 
     def identity(self) -> tuple[Any, ...]:
         if self.type == "file":
-            return (self.type, self.hash, self.chunks, self.mode)
+            return (self.type, self.hash, self.chunks, self.mode, self.mtime)
         if self.type == "symlink":
             return (self.type, self.target, self.mode, self.is_dir_symlink)
         if self.type == "directory":
-            return (self.type, self.mode)
+            return (self.type, self.mode, self.mtime)
         return (self.type,)
 
 
@@ -214,12 +258,16 @@ class Manifest:
     hash_algorithm: str = MANIFEST_HASH_ALGORITHM
 
     def __post_init__(self) -> None:
+        if self.version != MANIFEST_VERSION:
+            raise ManifestError(f"Unsupported manifest version: {self.version}")
+        validate_snapshot_id(self.snapshot_id)
+        validate_created_at(self.created_at)
         if self.hash_algorithm != MANIFEST_HASH_ALGORITHM:
             raise ManifestError(f"Unsupported manifest hash algorithm: {self.hash_algorithm}")
         if self.status not in MANIFEST_STATUSES:
             raise ManifestError(f"Unsupported manifest status: {self.status}")
-        if not isinstance(self.stats, dict):
-            raise ManifestError("Manifest stats must be an object")
+        object.__setattr__(self, "stats", validate_manifest_stats(self.stats))
+        object.__setattr__(self, "skipped", validate_skipped_items(self.skipped))
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "Manifest":
@@ -245,8 +293,10 @@ class Manifest:
             raise ManifestError(f"Unsupported manifest status: {status}")
 
         stats_data = data["stats"]
-        if not isinstance(stats_data, dict):
-            raise ManifestError("Manifest stats must be an object")
+        stats = validate_manifest_stats(stats_data)
+        skipped = validate_skipped_items(data.get("skipped", []))
+        snapshot_id = validate_snapshot_id(str(data["snapshot_id"]))
+        created_at = validate_created_at(str(data["created_at"]))
 
         files: dict[str, FileEntry] = {}
         for raw_path, raw_entry in files_data.items():
@@ -258,13 +308,13 @@ class Manifest:
             files[path] = FileEntry.from_dict(raw_entry)
 
         return cls(
-            snapshot_id=str(data["snapshot_id"]),
-            created_at=str(data["created_at"]),
+            snapshot_id=snapshot_id,
+            created_at=created_at,
             source=str(data["source"]),
             status=status,
-            stats=dict(stats_data),
+            stats=stats,
             files=files,
-            skipped=list(data.get("skipped", [])),
+            skipped=skipped,
             version=version,
             hash_algorithm=hash_algorithm,
         )
@@ -291,8 +341,7 @@ class ManifestStore:
         self.snapshots_dir.mkdir(parents=True, exist_ok=True)
 
     def path_for(self, snapshot_id: str) -> Path:
-        if "/" in snapshot_id or "\\" in snapshot_id or snapshot_id in ("", ".", ".."):
-            raise ManifestError(f"Invalid snapshot id: {snapshot_id}")
+        validate_snapshot_id(snapshot_id)
         return self.snapshots_dir / f"{snapshot_id}.json"
 
     def save(self, manifest: Manifest) -> Path:
@@ -303,51 +352,75 @@ class ManifestStore:
         sidecar = manifest_digest_path(path)
         self.snapshots_dir.mkdir(parents=True, exist_ok=True)
 
-        fd_json, json_tmp_name = tempfile.mkstemp(
-            prefix=f".{manifest.snapshot_id}.",
-            suffix=".json.tmp",
-            dir=self.snapshots_dir,
-            text=True,
-        )
-        json_tmp = Path(json_tmp_name)
-        fd_sidecar, sidecar_tmp_name = tempfile.mkstemp(
-            prefix=f".{manifest.snapshot_id}.",
-            suffix=".sha256.tmp",
-            dir=self.snapshots_dir,
-            text=True,
-        )
-        sidecar_tmp = Path(sidecar_tmp_name)
-        committed_json = False
+        json_tmp: Path | None = None
+        sidecar_tmp: Path | None = None
+        fd_json: int | None = None
+        fd_sidecar: int | None = None
         committed_sidecar = False
+        committed_json = False
 
         try:
+            fd_json, json_tmp_name = tempfile.mkstemp(
+                prefix=f".{manifest.snapshot_id}.",
+                suffix=".json.tmp",
+                dir=self.snapshots_dir,
+                text=True,
+            )
+            json_tmp = Path(json_tmp_name)
+            try:
+                fd_sidecar, sidecar_tmp_name = tempfile.mkstemp(
+                    prefix=f".{manifest.snapshot_id}.",
+                    suffix=".sha256.tmp",
+                    dir=self.snapshots_dir,
+                    text=True,
+                )
+                sidecar_tmp = Path(sidecar_tmp_name)
+            except Exception:
+                os.close(fd_json)
+                fd_json = None
+                json_tmp.unlink(missing_ok=True)
+                json_tmp = None
+                raise
+
             text = json.dumps(manifest.to_dict(), indent=2, sort_keys=True) + "\n"
             with os.fdopen(fd_json, "w", encoding="utf-8", newline="\n") as file:
+                fd_json = None
                 file.write(text)
                 file.flush()
                 os.fsync(file.fileno())
 
             digest = hash_file(json_tmp).hash_hex
             with os.fdopen(fd_sidecar, "w", encoding="utf-8", newline="\n") as file:
+                fd_sidecar = None
                 file.write(f"{digest}\n")
                 file.flush()
                 os.fsync(file.fileno())
 
-            os.replace(json_tmp, path)
-            committed_json = True
+            assert sidecar_tmp is not None
             os.replace(sidecar_tmp, sidecar)
+            sidecar_tmp = None
             committed_sidecar = True
+            assert json_tmp is not None
+            os.replace(json_tmp, path)
+            json_tmp = None
+            committed_json = True
             fsync_directory(self.snapshots_dir)
             return path
         except Exception:
-            if committed_sidecar:
-                sidecar.unlink(missing_ok=True)
             if committed_json:
                 path.unlink(missing_ok=True)
+            if committed_sidecar:
+                sidecar.unlink(missing_ok=True)
             raise
         finally:
-            json_tmp.unlink(missing_ok=True)
-            sidecar_tmp.unlink(missing_ok=True)
+            if fd_json is not None:
+                os.close(fd_json)
+            if fd_sidecar is not None:
+                os.close(fd_sidecar)
+            if json_tmp is not None:
+                json_tmp.unlink(missing_ok=True)
+            if sidecar_tmp is not None:
+                sidecar_tmp.unlink(missing_ok=True)
 
     def delete(self, snapshot_id: str) -> None:
         path = self.path_for(snapshot_id)
@@ -368,19 +441,45 @@ class ManifestStore:
             raise ManifestError(f"Could not load manifest {path}: {exc}") from exc
         if not isinstance(data, dict):
             raise ManifestError("Manifest root must be an object")
-        return Manifest.from_dict(data)
+        manifest = Manifest.from_dict(data)
+        if manifest.snapshot_id != path.stem:
+            raise ManifestError(
+                f"Manifest snapshot_id mismatch: file {path.stem}, "
+                f"content {manifest.snapshot_id}"
+            )
+        return manifest
 
-    def migrate_missing_digests(self) -> list[str]:
-        """Write missing digest sidecars for manifests that predate sidecar support."""
+    def migrate_missing_digests(self) -> MigrateDigestResult:
+        """Write missing digest sidecars for valid legacy manifests."""
 
         migrated: list[str] = []
+        skipped: list[str] = []
         for path in self.list_paths():
             sidecar = manifest_digest_path(path)
             if sidecar.exists():
                 continue
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                skipped.append(f"{path.name}: Could not load manifest: {exc}")
+                continue
+            if not isinstance(data, dict):
+                skipped.append(f"{path.name}: Manifest root must be an object")
+                continue
+            try:
+                manifest = Manifest.from_dict(data)
+            except ManifestError as exc:
+                skipped.append(f"{path.name}: {exc}")
+                continue
+            if manifest.snapshot_id != path.stem:
+                skipped.append(
+                    f"{path.name}: Manifest snapshot_id mismatch: file {path.stem}, "
+                    f"content {manifest.snapshot_id}"
+                )
+                continue
             write_manifest_digest(path)
             migrated.append(path.stem)
-        return migrated
+        return MigrateDigestResult(migrated=migrated, skipped=skipped)
 
     def list_paths(self) -> list[Path]:
         if not self.snapshots_dir.exists():

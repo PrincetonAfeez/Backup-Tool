@@ -184,7 +184,7 @@ def test_cli_dry_run_backup_with_skipped_returns_zero(monkeypatch, repo_path: Pa
 
 
 def test_print_helpers(capsys):
-    _print_backup_summary({"file_count": 1, "new_files": 1})
+    _print_backup_summary({"entry_count": 1, "regular_file_count": 1, "new_files": 1})
     _print_diff(DiffResult(["a"], [], [], ["b"]), show_unchanged=True)
     output = capsys.readouterr().out
     assert "Summary:" in output
@@ -209,6 +209,18 @@ def test_cli_lock_error_exit_code(repo: Repository, source_dir: Path, repo_path:
         with redirect_stderr(stderr):
             code = main(["backup", str(source_dir), "--repo", str(repo_path)])
     assert code == 5
+
+
+def test_cli_migrate_manifest_digests(repo: Repository, source_dir: Path, repo_path: Path):
+    (source_dir / "a.txt").write_text("hello", encoding="utf-8")
+    repo.backup(source_dir)
+    path = repo.manifest_store.path_for(repo.manifest_store.latest().snapshot_id)
+    sidecar = path.with_name(f"{path.name}.sha256")
+    sidecar.unlink()
+
+    code = main(["migrate", "manifest-digests", "--repo", str(repo_path)])
+    assert code == 0
+    assert sidecar.exists()
 
 
 def test_cli_repository_error_exit_code(repo_path: Path):

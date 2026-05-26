@@ -10,6 +10,11 @@ from backup_tool.chunking import file_blob_hashes, verify_file_entry
 from backup_tool.errors import IntegrityError, ManifestError, StoreError
 from backup_tool.manifest import MANIFEST_VERSION, Manifest
 from backup_tool.repo_metadata import validate_repo_metadata
+from backup_tool.tmp_hygiene import (
+    iter_stale_lock_tmp_files,
+    iter_stale_manifest_tmp_files,
+    remove_stale_paths,
+)
 
 if TYPE_CHECKING:
     from backup_tool.repository import Repository
@@ -115,7 +120,15 @@ def check_repository(repo: Repository, *, repair: bool = False) -> CheckResult:
 
     stale_tmp = repo.object_store.iter_stale_tmp_files()
     if stale_tmp:
-        warnings.append(f"{len(stale_tmp)} stale tmp file(s) found")
+        warnings.append(f"{len(stale_tmp)} stale blob tmp file(s) found")
+
+    stale_manifest_tmp = iter_stale_manifest_tmp_files(repo.snapshots_dir)
+    if stale_manifest_tmp:
+        warnings.append(f"{len(stale_manifest_tmp)} stale manifest tmp file(s) found")
+
+    stale_lock_tmp = iter_stale_lock_tmp_files(repo.path)
+    if stale_lock_tmp:
+        warnings.append(f"{len(stale_lock_tmp)} stale lock tmp file(s) found")
 
     all_hashes = {hash_hex for hash_hex, _path in repo.object_store.iter_blob_paths()}
     orphaned = all_hashes - referenced
@@ -131,5 +144,5 @@ def check_repository(repo: Repository, *, repair: bool = False) -> CheckResult:
         referenced_object_count=len(referenced),
         orphan_object_count=len(orphaned),
         quarantined_malformed=quarantined_malformed,
-        repaired=repair,
+        repaired=bool(quarantined_malformed),
     )

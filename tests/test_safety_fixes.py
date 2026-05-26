@@ -18,7 +18,7 @@ from backup_tool.object_store import ObjectStore
 from backup_tool.paths import validate_exclude_pattern
 from backup_tool.repository import Repository
 from backup_tool.snapshot_engine import SnapshotEngine
-from tests.conftest import manifest_hash, skip_skip_me
+from tests.conftest import TEST_SNAPSHOT_ID, manifest_hash, skip_skip_me
 
 
 @pytest.fixture
@@ -228,26 +228,27 @@ def test_manifest_save_rolls_back_when_sidecar_write_fails(tmp_path: Path, monke
     import os
 
     from backup_tool.manifest import Manifest, ManifestStore
+    from tests.conftest import TEST_CREATED_AT, TEST_SNAPSHOT_ID
 
     store = ManifestStore(tmp_path)
     store.init()
     manifest = Manifest(
-        snapshot_id="2026-01-01T00-00-00Z_abcd1234",
-        created_at="2026-01-01T00:00:00Z",
+        snapshot_id=TEST_SNAPSHOT_ID,
+        created_at=TEST_CREATED_AT,
         source="src",
         status="complete",
-        stats={"file_count": 0},
+        stats={"entry_count": 0},
         files={},
     )
     real_replace = os.replace
 
-    def fail_replace_sidecar(src, dst):
-        if str(dst).endswith(".sha256"):
-            raise OSError("sidecar write failed")
+    def fail_replace_json(src, dst):
+        if str(dst).endswith(".json") and not str(dst).endswith(".sha256"):
+            raise OSError("json write failed")
         return real_replace(src, dst)
 
-    monkeypatch.setattr("backup_tool.manifest.os.replace", fail_replace_sidecar)
-    with pytest.raises(OSError, match="sidecar write failed"):
+    monkeypatch.setattr("backup_tool.manifest.os.replace", fail_replace_json)
+    with pytest.raises(OSError, match="json write failed"):
         store.save(manifest)
 
     path = store.path_for(manifest.snapshot_id)
@@ -262,10 +263,19 @@ def test_migrate_manifest_digests_writes_missing_sidecars(repo: Repository, sour
     sidecar = path.with_name(f"{path.name}.sha256")
     sidecar.unlink()
 
-    migrated = repo.migrate_manifest_digests()
-    assert path.stem in migrated
+    migrate_result = repo.migrate_manifest_digests()
+    assert path.stem in migrate_result.migrated
     assert sidecar.exists()
     assert repo.manifest_store.load(path.stem).snapshot_id == path.stem
+
+
+def test_migrate_manifest_digests_skips_invalid_manifest(repo: Repository, tmp_path: Path):
+    invalid = repo.snapshots_dir / f"{TEST_SNAPSHOT_ID}.json"
+    invalid.write_text('{"version": 1, "bad": true}', encoding="utf-8")
+    migrate_result = repo.migrate_manifest_digests()
+    assert TEST_SNAPSHOT_ID not in migrate_result.migrated
+    assert any(TEST_SNAPSHOT_ID in item for item in migrate_result.skipped)
+    assert not invalid.with_name(f"{invalid.name}.sha256").exists()
 
 
 def test_repo_json_non_object_raises_repository_error(repo_path: Path):
@@ -296,7 +306,6 @@ def test_manifest_non_object_root_rejected(tmp_path: Path):
         ("size", "big", "size must be an integer"),
         ("mtime", "not-a-number", "mtime must be numeric"),
         ("mode", "644", "mode must be an integer"),
-        ("is_dir_symlink", "yes", "is_dir_symlink must be a boolean"),
     ],
 )
 def test_file_entry_rejects_invalid_metadata(field, value, match):

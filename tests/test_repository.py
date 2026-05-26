@@ -137,7 +137,7 @@ def test_repo_inside_source_is_excluded(tmp_path: Path):
 def test_empty_source_backup(repo: Repository, source_dir: Path):
     result = repo.backup(source_dir)
     assert result.committed
-    assert result.manifest.stats["file_count"] == 0
+    assert result.manifest.stats["entry_count"] == 0
     assert repo.verify("latest").ok
 
 

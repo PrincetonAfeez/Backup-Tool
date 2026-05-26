@@ -39,7 +39,7 @@ def test_build_snapshot_requires_directory(engine: SnapshotEngine, tmp_path: Pat
 def test_build_snapshot_empty_directory(engine: SnapshotEngine, source_dir: Path):
     result = engine.build_snapshot(source_dir, None)
     assert result.manifest is not None
-    assert result.manifest.stats["file_count"] == 0
+    assert result.manifest.stats["entry_count"] == 0
     assert result.status == "complete"
 
 

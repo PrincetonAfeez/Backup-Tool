@@ -7,6 +7,11 @@ from typing import TYPE_CHECKING
 
 from backup_tool.chunking import file_blob_hashes
 from backup_tool.manifest import Manifest
+from backup_tool.tmp_hygiene import (
+    iter_stale_lock_tmp_files,
+    iter_stale_manifest_tmp_files,
+    remove_stale_paths,
+)
 
 if TYPE_CHECKING:
     from backup_tool.repository import Repository
@@ -40,6 +45,17 @@ def gc_unlocked(
         ]
 
     removed_tmp, tmp_bytes_deleted = repo.object_store.remove_stale_tmp_files(dry_run=dry_run)
+
+    if aggressive:
+        stale_manifest_tmp = iter_stale_manifest_tmp_files(repo.snapshots_dir)
+        removed_manifest, manifest_bytes = remove_stale_paths(
+            stale_manifest_tmp,
+            dry_run=dry_run,
+        )
+        stale_lock_tmp = iter_stale_lock_tmp_files(repo.path)
+        removed_lock, lock_bytes = remove_stale_paths(stale_lock_tmp, dry_run=dry_run)
+        removed_tmp = [*removed_tmp, *removed_manifest, *removed_lock]
+        tmp_bytes_deleted += manifest_bytes + lock_bytes
 
     referenced: set[str] = set()
     source_manifests = manifests if manifests is not None else repo.manifest_store.list_manifests()

@@ -117,11 +117,8 @@ def test_gc_reclaims_orphan_blob_from_strict_abort(repo: Repository, source_dir:
 
     result = repo.backup(source_dir, strict=True, skip_predicate=_skip_skip_me)
     assert result.manifest is None
-    assert repo.object_store.exists(keep_hash)
-
-    gc = repo.gc()
-    assert keep_hash in gc.deleted_blobs
     assert not repo.object_store.exists(keep_hash)
+    assert list(repo.object_store.iter_hashes()) == []
 
 
 def test_break_lock_release_does_not_steal_replaced_lock(tmp_path: Path):

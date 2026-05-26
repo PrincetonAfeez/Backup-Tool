@@ -3,7 +3,7 @@
 
 from backup_tool.diff import DiffResult, classify_entries, diff_manifests
 from backup_tool.manifest import FileEntry, Manifest
-from tests.conftest import manifest_hash
+from tests.conftest import TEST_CREATED_AT, TEST_SNAPSHOT_ID_A, TEST_SNAPSHOT_ID_B, manifest_hash
 
 
 def _file_entry(content_hash: str, chunks: tuple[str, ...] | None = None) -> FileEntry:
@@ -56,21 +56,30 @@ def test_classify_entries_with_no_previous():
     assert result.deleted == []
 
 
+def test_classify_entries_detects_mtime_only_change():
+    shared_hash = manifest_hash("h")
+    previous = {"a.txt": FileEntry(type="file", hash=shared_hash, size=1, mtime=1.0)}
+    current = {"a.txt": FileEntry(type="file", hash=shared_hash, size=1, mtime=2.0)}
+    result = classify_entries(current, previous)
+    assert result.changed == ["a.txt"]
+    assert result.unchanged == []
+
+
 def test_diff_manifests_compares_two_manifests():
     manifest_a = Manifest(
-        snapshot_id="a",
-        created_at="t1",
+        snapshot_id=TEST_SNAPSHOT_ID_A,
+        created_at=TEST_CREATED_AT,
         source="src",
         status="complete",
-        stats={},
+        stats={"entry_count": 1},
         files={"x.txt": _file_entry("h1")},
     )
     manifest_b = Manifest(
-        snapshot_id="b",
-        created_at="t2",
+        snapshot_id=TEST_SNAPSHOT_ID_B,
+        created_at="2026-01-02T00:00:00.000000Z",
         source="src",
         status="complete",
-        stats={},
+        stats={"entry_count": 2},
         files={"x.txt": _file_entry("h2"), "y.txt": _file_entry("h3")},
     )
     result = diff_manifests(manifest_a, manifest_b)

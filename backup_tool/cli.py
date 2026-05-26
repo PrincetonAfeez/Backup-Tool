@@ -147,34 +147,37 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "backup":
             for pattern in args.exclude:
                 validate_exclude_pattern(pattern)
-            result = repo.backup(
+            backup_result = repo.backup(
                 args.src,
                 excludes=args.exclude,
                 dry_run=args.dry_run,
                 strict=args.strict,
                 break_lock=args.break_lock,
             )
-            if result.manifest is None:
+            if backup_result.manifest is None:
                 print("Backup aborted; no snapshot committed.", file=sys.stderr)
-                for item in result.skipped:
+                for item in backup_result.skipped:
                     print(f"skipped: {item.path}: {item.reason}", file=sys.stderr)
                 return 3
 
-            manifest = result.manifest
-            if args.verbose and result.stale_lock_cleared_pid is not None:
+            manifest = backup_result.manifest
+            if args.verbose and backup_result.stale_lock_cleared_pid is not None:
                 print(
-                    f"warning: removed stale lock (pid={result.stale_lock_cleared_pid})",
+                    f"warning: removed stale lock (pid={backup_result.stale_lock_cleared_pid})",
                     file=sys.stderr,
                 )
-            for warning in result.warnings:
+            for warning in backup_result.warnings:
                 print(f"warning: {warning}", file=sys.stderr)
 
-            if result.dry_run:
+            if backup_result.dry_run:
                 print(f"Dry run: snapshot {manifest.snapshot_id} was not committed.")
             else:
                 print(f"Snapshot {manifest.snapshot_id} committed.")
                 if manifest.status == "partial":
-                    skipped_count = manifest.stats.get("skipped_files", len(result.skipped))
+                    skipped_count = manifest.stats.get(
+                        "skipped_files",
+                        len(backup_result.skipped),
+                    )
                     print(
                         f"warning: snapshot is partial ({skipped_count} file(s) skipped)",
                         file=sys.stderr,
@@ -182,11 +185,11 @@ def main(argv: list[str] | None = None) -> int:
 
             _print_backup_summary(manifest.stats)
 
-            if args.verbose:
-                _print_diff(result.diff, show_unchanged=True)
-                for item in result.skipped:
-                    print(f"skipped: {item.path}: {item.reason}")
-            return 3 if result.skipped and not result.dry_run else 0
+            if args.verbose and backup_result.diff is not None:
+                _print_diff(backup_result.diff, show_unchanged=True)
+                for skipped_item in backup_result.skipped:
+                    print(f"skipped: {skipped_item.path}: {skipped_item.reason}")
+            return 3 if backup_result.skipped and not backup_result.dry_run else 0
 
         if args.command == "list":
             summaries = repo.list_snapshots()
@@ -202,7 +205,7 @@ def main(argv: list[str] | None = None) -> int:
                     status = f"{status} [PARTIAL]"
                 print(
                     f"{prefix}{summary.snapshot_id}  {summary.created_at}  "
-                    f"{status}  files={summary.file_count}  "
+                    f"{status}  entries={summary.entry_count}  "
                     f"new_bytes={summary.new_bytes_stored}  source={summary.source}"
                 )
             return 0
@@ -228,7 +231,7 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         if args.command == "restore":
-            result = repo.restore(
+            restore_result = repo.restore(
                 args.snapshot,
                 args.to,
                 file_path=args.file,
@@ -237,70 +240,75 @@ def main(argv: list[str] | None = None) -> int:
                 break_lock=args.break_lock,
             )
             print(
-                f"Restored {result.restored_files} file(s), "
-                f"{result.restored_directories} director(ies), and "
-                f"{result.restored_symlinks} symlink(s) to {result.destination}"
+                f"Restored {restore_result.restored_files} file(s), "
+                f"{restore_result.restored_directories} director(ies), and "
+                f"{restore_result.restored_symlinks} symlink(s) to {restore_result.destination}"
             )
-            for warning in result.warnings:
+            for warning in restore_result.warnings:
                 print(f"warning: {warning}", file=sys.stderr)
-            return 0
+            if restore_result.failed_symlinks:
+                print(
+                    f"warning: restore is partial ({restore_result.failed_symlinks} symlink(s) failed)",
+                    file=sys.stderr,
+                )
+            return 3 if restore_result.failed_symlinks else 0
 
         if args.command == "diff":
-            result = repo.diff(args.snapshot_a, args.snapshot_b)
-            _print_diff(result, show_unchanged=args.verbose)
+            diff_result = repo.diff(args.snapshot_a, args.snapshot_b)
+            _print_diff(diff_result, show_unchanged=args.verbose)
             return 0
 
         if args.command == "verify":
-            result = repo.verify(args.snapshot)
-            for warning in result.warnings:
+            verify_result = repo.verify(args.snapshot)
+            for warning in verify_result.warnings:
                 print(f"warning: {warning}", file=sys.stderr)
-            if result.ok:
-                print(f"Snapshot {result.snapshot_id} verified.")
+            if verify_result.ok:
+                print(f"Snapshot {verify_result.snapshot_id} verified.")
                 return 0
-            for error in result.errors:
+            for error in verify_result.errors:
                 print(f"error: {error}", file=sys.stderr)
             return 2
 
         if args.command == "check":
-            result = repo.check(repair=args.repair, break_lock=args.break_lock)
+            check_result = repo.check(repair=args.repair, break_lock=args.break_lock)
             print(
-                f"snapshots={result.snapshot_count} objects={result.object_count} "
-                f"referenced={result.referenced_object_count} orphans={result.orphan_object_count}"
+                f"snapshots={check_result.snapshot_count} objects={check_result.object_count} "
+                f"referenced={check_result.referenced_object_count} orphans={check_result.orphan_object_count}"
             )
-            for warning in result.warnings:
+            for warning in check_result.warnings:
                 print(f"warning: {warning}", file=sys.stderr)
-            for item in result.quarantined_malformed:
-                print(f"quarantined: {item}")
-            if result.orphan_object_count > 0:
+            for quarantined_item in check_result.quarantined_malformed:
+                print(f"quarantined: {quarantined_item}")
+            if check_result.orphan_object_count > 0:
                 print(
                     f"hint: run `backup-tool gc --repo {args.repo}` to remove unreferenced blobs.",
                     file=sys.stderr,
                 )
-            if result.ok:
+            if check_result.ok:
                 print("Repository check passed.")
                 return 0
-            for error in result.errors:
+            for error in check_result.errors:
                 print(f"error: {error}", file=sys.stderr)
             return 2
 
         if args.command == "prune":
-            result = repo.prune(
+            prune_result = repo.prune(
                 args.keep,
                 dry_run=args.dry_run,
                 run_gc=args.gc,
                 break_lock=args.break_lock,
             )
-            prefix = "Would delete" if result.dry_run else "Deleted"
-            print(f"{prefix} {len(result.deleted_snapshots)} snapshot(s).")
-            for snapshot_id in result.deleted_snapshots:
+            prefix = "Would delete" if prune_result.dry_run else "Deleted"
+            print(f"{prefix} {len(prune_result.deleted_snapshots)} snapshot(s).")
+            for snapshot_id in prune_result.deleted_snapshots:
                 print(snapshot_id)
-            if result.gc_result is not None:
-                gc_prefix = "Would delete" if result.gc_result.dry_run else "Deleted"
+            if prune_result.gc_result is not None:
+                gc_prefix = "Would delete" if prune_result.gc_result.dry_run else "Deleted"
                 print(
-                    f"{gc_prefix} {len(result.gc_result.deleted_blobs)} blob(s); "
-                    f"bytes={result.gc_result.bytes_deleted}."
+                    f"{gc_prefix} {len(prune_result.gc_result.deleted_blobs)} blob(s); "
+                    f"bytes={prune_result.gc_result.bytes_deleted}."
                 )
-            elif result.deleted_snapshots:
+            elif prune_result.deleted_snapshots:
                 print(
                     f"hint: run `backup-tool gc --repo {args.repo}` or use --gc to reclaim blob space.",
                     file=sys.stderr,
@@ -308,32 +316,34 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         if args.command == "gc":
-            result = repo.gc(
+            gc_result = repo.gc(
                 dry_run=args.dry_run,
                 aggressive=args.aggressive,
                 break_lock=args.break_lock,
             )
-            prefix = "Would delete" if result.dry_run else "Deleted"
-            print(f"{prefix} {len(result.deleted_blobs)} blob(s); bytes={result.bytes_deleted}.")
-            if result.removed_tmp_files:
-                tmp_prefix = "Would remove" if result.dry_run else "Removed"
+            prefix = "Would delete" if gc_result.dry_run else "Deleted"
+            print(f"{prefix} {len(gc_result.deleted_blobs)} blob(s); bytes={gc_result.bytes_deleted}.")
+            if gc_result.removed_tmp_files:
+                tmp_prefix = "Would remove" if gc_result.dry_run else "Removed"
                 print(
-                    f"{tmp_prefix} {len(result.removed_tmp_files)} stale tmp file(s); "
-                    f"bytes={result.tmp_bytes_deleted}."
+                    f"{tmp_prefix} {len(gc_result.removed_tmp_files)} stale tmp file(s); "
+                    f"bytes={gc_result.tmp_bytes_deleted}."
                 )
-            for item in result.quarantined_malformed:
-                print(f"quarantined: {item}")
+            for quarantined_item in gc_result.quarantined_malformed:
+                print(f"quarantined: {quarantined_item}")
             return 0
 
         if args.command == "migrate":
             if args.migrate_target == "manifest-digests":
-                migrated = repo.migrate_manifest_digests(break_lock=args.break_lock)
-                if migrated:
-                    print(f"Migrated {len(migrated)} manifest digest sidecar(s).")
-                    for snapshot_id in migrated:
+                migrate_result = repo.migrate_manifest_digests(break_lock=args.break_lock)
+                if migrate_result.migrated:
+                    print(f"Migrated {len(migrate_result.migrated)} manifest digest sidecar(s).")
+                    for snapshot_id in migrate_result.migrated:
                         print(snapshot_id)
                 else:
                     print("No manifests required digest migration.")
+                for skipped_message in migrate_result.skipped:
+                    print(f"skipped: {skipped_message}", file=sys.stderr)
                 return 0
 
         parser.error(f"Unknown command: {args.command}")
@@ -359,7 +369,8 @@ def main(argv: list[str] | None = None) -> int:
 def _print_backup_summary(stats: dict[str, int]) -> None:
     print(
         "Summary: "
-        f"files={stats.get('file_count', 0)} "
+        f"entries={stats.get('entry_count', 0)} "
+        f"files={stats.get('regular_file_count', 0)} "
         f"new={stats.get('new_files', 0)} "
         f"changed={stats.get('changed_files', 0)} "
         f"deleted={stats.get('deleted_files', 0)} "

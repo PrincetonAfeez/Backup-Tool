@@ -52,8 +52,46 @@ def test_check_warns_about_stale_tmp(repo: Repository, monkeypatch):
     os.utime(stale, (old, old))
 
     result = repo.check()
-    assert any("stale tmp file" in warning for warning in result.warnings)
+    assert any("stale blob tmp file" in warning for warning in result.warnings)
     assert stale.exists()
+
+
+def test_gc_aggressive_removes_stale_manifest_and_lock_tmp(repo: Repository):
+    stale_manifest = repo.snapshots_dir / ".2026-01-01T00-00-00-000000Z_abcd1234..json.tmp"
+    stale_manifest.write_text("leftover", encoding="utf-8")
+    stale_lock = repo.path / ".lock.stale.tmp"
+    stale_lock.write_text("leftover", encoding="utf-8")
+    old = time.time() - DEFAULT_TMP_MAX_AGE_SECONDS - 60
+    os.utime(stale_manifest, (old, old))
+    os.utime(stale_lock, (old, old))
+
+    result = repo.gc(aggressive=True)
+    assert not stale_manifest.exists()
+    assert not stale_lock.exists()
+    assert str(stale_manifest) in result.removed_tmp_files
+    assert str(stale_lock) in result.removed_tmp_files
+
+
+def test_check_repair_without_malformed_does_not_mark_repaired(repo: Repository):
+    result = repo.check(repair=True)
+    assert result.repaired is False
+
+
+def test_quarantine_malformed_uses_unique_names(tmp_path: Path):
+    store = ObjectStore(tmp_path / "objects", tmp_path / "tmp")
+    store.init()
+    first = store.objects_dir / "aa" / "same-name"
+    second = store.objects_dir / "bb" / "same-name"
+    first.parent.mkdir(parents=True)
+    second.parent.mkdir(parents=True)
+    first.write_bytes(b"one")
+    second.write_bytes(b"two")
+    quarantine = tmp_path / "quarantine"
+    moved = store.quarantine_malformed(quarantine, dry_run=False)
+    assert len(moved) == 2
+    destinations = list(quarantine.iterdir())
+    assert len(destinations) == 2
+    assert destinations[0].name != destinations[1].name
 
 
 def test_gc_removes_stale_tmp(repo: Repository):

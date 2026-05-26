@@ -27,6 +27,13 @@ def manifest_hash(label: str) -> str:
     return sha256(label.encode()).hexdigest()
 
 
+TEST_SNAPSHOT_ID = "2026-01-01T00-00-00-000000Z_abcd1234"
+TEST_SNAPSHOT_ID_A = "2026-01-01T00-00-00-000000Z_abcd1234"
+TEST_SNAPSHOT_ID_B = "2026-01-02T00-00-00-000000Z_deadbeef"
+TEST_CREATED_AT = "2026-01-01T00:00:00.000000Z"
+MISSING_SNAPSHOT_ID = "2026-01-09T00-00-00-000000Z_cafebabe"
+
+
 @pytest.fixture
 def source_dir(tmp_path: Path) -> Path:
     directory = tmp_path / "source"

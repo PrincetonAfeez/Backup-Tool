@@ -18,23 +18,22 @@ from backup_tool.manifest import FileEntry, Manifest
 from backup_tool.object_store import DEFAULT_TMP_MAX_AGE_SECONDS
 from backup_tool.paths import safe_restore_path
 from backup_tool.repository import Repository
-from tests.conftest import manifest_hash, skip_skip_me, symlink_required
+from tests.conftest import TEST_CREATED_AT, TEST_SNAPSHOT_ID, manifest_hash, skip_skip_me, symlink_required
 
 
 def test_strict_abort_gc_reclaims_all_scanned_blobs(repo: Repository, source_dir: Path):
-    """U-Test-11: blobs stored before strict abort are reclaimed by GC."""
+    """Strict abort discards staged blobs; nothing is promoted to objects/."""
     (source_dir / "keep1.txt").write_text("one", encoding="utf-8")
     (source_dir / "keep2.txt").write_text("two", encoding="utf-8")
     (source_dir / "skip-me.txt").write_text("skip", encoding="utf-8")
 
     result = repo.backup(source_dir, strict=True, skip_predicate=skip_skip_me)
     assert result.manifest is None
-    scanned_hashes = list(repo.object_store.iter_hashes())
-    assert len(scanned_hashes) == 2
+    assert list(repo.object_store.iter_hashes()) == []
+    assert not any(repo.object_store.staging_root(snapshot_id).exists() for snapshot_id in [])
 
     gc = repo.gc()
-    assert set(gc.deleted_blobs) == set(scanned_hashes)
-    assert list(repo.object_store.iter_hashes()) == []
+    assert gc.deleted_blobs == []
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Unix file modes are not portable on Windows")
@@ -65,8 +64,8 @@ def test_manifest_rejects_borked_status():
     """U-Test-15: unknown status values fail at load time."""
     payload = {
         "version": 1,
-        "snapshot_id": "id",
-        "created_at": "t",
+        "snapshot_id": TEST_SNAPSHOT_ID,
+        "created_at": TEST_CREATED_AT,
         "source": "src",
         "hash_algorithm": "sha256",
         "status": "borked",

@@ -13,7 +13,7 @@ from backup_tool.manifest import FileEntry
 from backup_tool.object_store import ObjectStore
 
 
-# Files larger than this threshold are stored as content-defined fixed blocks.
+# Files larger than this threshold are stored as fixed-size content-addressed blocks.
 CHUNKING_THRESHOLD = DEFAULT_CHUNK_SIZE
 
 

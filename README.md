@@ -2,7 +2,7 @@
 
 ![Tests](https://github.com/PrincetonAfeez/Backup-Tool/actions/workflows/tests.yml/badge.svg)
 
-A local Python backup tool that uses content-addressable storage and append-only
+A local Python backup tool that uses content-addressable storage and immutable
 JSON snapshot manifests to create incremental, verifiable snapshots.
 
 The core package is standard-library only. The CLI is intentionally thin and
@@ -112,10 +112,13 @@ never modified in place; `prune` may delete old manifest files during retention.
   "skipped": [],
   "stats": {
     "changed_files": 0,
-    "file_count": 3,
+    "directory_count": 1,
+    "entry_count": 3,
     "new_bytes_stored": 12,
     "new_files": 1,
-    "skipped_files": 0
+    "regular_file_count": 2,
+    "skipped_files": 0,
+    "symlink_count": 0
   },
   "status": "complete",
   "version": 1
@@ -203,6 +206,9 @@ This tool is intended for small, local datasets in an academic setting:
   passes to confirm unchanged content, then one store pass. The store pass is
   checked against the stable hash; if it diverges, the file is skipped. This is
   correct but expensive for large trees — see ADR 0012 for future work.
+- Non-dry-run backups stage new blobs under `tmp/staging/<snapshot-id>/` during
+  the scan and promote them to `objects/` only when the snapshot succeeds. Strict
+  aborts and failed scans discard staging instead of leaving orphan blobs.
 
 Manifests committed before digest sidecars were added cannot be loaded until
 you run `backup-tool migrate manifest-digests --repo <path>` once.

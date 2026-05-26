@@ -46,15 +46,11 @@ python_version = "3.11"
 packages = ["backup_tool"]
 warn_unused_configs = true
 disallow_untyped_defs = false
-check_untyped_defs = false
+check_untyped_defs = true
 warn_return_any = false
 
 [[tool.mypy.overrides]]
 module = ["backup_tool.manifest"]
 strict = true
 follow_imports = "skip"
-
-[[tool.mypy.overrides]]
-module = ["backup_tool.cli"]
-disable_error_code = ["assignment", "attr-defined", "arg-type"]
 

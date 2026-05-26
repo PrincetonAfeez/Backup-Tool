@@ -12,7 +12,7 @@ from backup_tool.diff import DiffResult, diff_manifests
 from backup_tool.errors import ManifestError, RepositoryError
 from backup_tool.gc import GCResult, gc_unlocked
 from backup_tool.lock import RepositoryLock
-from backup_tool.manifest import Manifest, ManifestStore
+from backup_tool.manifest import Manifest, ManifestStore, MigrateDigestResult
 from backup_tool.object_store import ObjectStore
 from backup_tool.paths import validate_exclude_pattern
 from backup_tool.repo_metadata import default_repo_metadata, validate_repo_metadata
@@ -29,7 +29,7 @@ class SnapshotSummary:
     created_at: str
     source: str
     status: str
-    file_count: int
+    entry_count: int
     new_bytes_stored: int
 
 
@@ -139,7 +139,9 @@ class Repository:
                         created_at=manifest.created_at,
                         source=manifest.source,
                         status=manifest.status,
-                        file_count=int(manifest.stats.get("file_count", len(manifest.files))),
+                        entry_count=int(
+                            manifest.stats.get("entry_count", len(manifest.files))
+                        ),
                         new_bytes_stored=int(manifest.stats.get("new_bytes_stored", 0)),
                     )
                 )
@@ -243,7 +245,7 @@ class Repository:
         with RepositoryLock(self.lock_path, break_lock=break_lock):
             return self._gc_unlocked(dry_run=dry_run, aggressive=aggressive)
 
-    def migrate_manifest_digests(self, break_lock: bool = False) -> list[str]:
+    def migrate_manifest_digests(self, break_lock: bool = False) -> MigrateDigestResult:
         """Write missing `.sha256` sidecars for legacy manifests."""
 
         self._ensure_initialized()
