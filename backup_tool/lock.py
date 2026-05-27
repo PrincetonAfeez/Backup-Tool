@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import tempfile
 import time
 from pathlib import Path
 from secrets import token_hex
@@ -97,7 +96,15 @@ def clear_stale_lock(path: Path) -> int | None:
         return None
 
     pid = read_lock_pid(path)
-    if pid is None or is_process_alive(pid):
+    if pid is None:
+        try:
+            if path.stat().st_size == 0:
+                path.unlink(missing_ok=True)
+        except OSError:
+            return None
+        return None
+
+    if is_process_alive(pid):
         return None
 
     path.unlink(missing_ok=True)
@@ -148,26 +155,13 @@ class RepositoryLock:
             raise
 
     def _commit_lock_payload(self, payload: str) -> None:
+        if self._fd is None:
+            raise LockError("Lock file descriptor is not open")
+
         data = payload.encode("utf-8")
-        temp_fd, temp_name = tempfile.mkstemp(prefix=".lock.", suffix=".tmp", dir=self.path.parent)
-        temp_path = Path(temp_name)
-
-        try:
-            try:
-                _write_all(temp_fd, data)
-                os.fsync(temp_fd)
-            finally:
-                os.close(temp_fd)
-
-            if self._fd is not None:
-                os.close(self._fd)
-                self._fd = None
-
-            os.replace(temp_path, self.path)
-            fsync_directory(self.path.parent)
-        except Exception:
-            temp_path.unlink(missing_ok=True)
-            raise
+        _write_all(self._fd, data)
+        os.fsync(self._fd)
+        fsync_directory(self.path.parent)
 
     def _abort_acquire(self) -> None:
         if self._fd is not None:

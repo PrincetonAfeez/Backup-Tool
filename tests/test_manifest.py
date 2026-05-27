@@ -9,7 +9,9 @@ from backup_tool.manifest import (
     FileEntry,
     Manifest,
     ManifestStore,
+    manifest_digest_path,
     manifest_stats_consistency_errors,
+    verify_manifest_digest,
     write_manifest_digest,
 )
 from tests.conftest import (
@@ -75,6 +77,26 @@ def test_file_entry_direct_construct_rejects_missing_file_hash():
         FileEntry(type="file")
 
 
+def test_file_entry_direct_construct_rejects_invalid_symlink_mtime():
+    with pytest.raises(ManifestError, match="mtime must be numeric"):
+        FileEntry(type="symlink", target="dest", mtime="bad")  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("mtime", [float("nan"), float("inf"), float("-inf")])
+def test_file_entry_rejects_non_finite_mtime(mtime: float):
+    with pytest.raises(ManifestError, match="mtime must be finite"):
+        FileEntry(
+            type="file",
+            hash=manifest_hash("x"),
+            size=1,
+            mtime=mtime,
+        )
+    with pytest.raises(ManifestError, match="mtime must be finite"):
+        FileEntry.from_dict(
+            {"type": "file", "hash": manifest_hash("x"), "mtime": mtime},
+        )
+
+
 @pytest.mark.parametrize(
     "data,match",
     [
@@ -84,6 +106,11 @@ def test_file_entry_direct_construct_rejects_missing_file_hash():
         ({"type": "file", "hash": manifest_hash("x"), "chunks": []}, "non-empty list"),
         ({"type": "file", "hash": manifest_hash("x"), "chunks": "bad"}, "non-empty list"),
         ({"type": "file", "hash": "short"}, "Invalid SHA-256 hash length"),
+        ({"type": "file", "hash": 1}, "hash must be a string"),
+        (
+            {"type": "file", "hash": manifest_hash("x"), "chunks": [1]},
+            "chunks\\[0\\] must be a string",
+        ),
     ],
 )
 def test_file_entry_from_dict_validation(data, match):
@@ -156,6 +183,93 @@ def test_manifest_rejects_non_object_stats():
         Manifest.from_dict(payload)
 
 
+def test_manifest_direct_construct_normalizes_file_paths():
+    entry = FileEntry(type="file", hash=manifest_hash("x"), size=1)
+    manifest = Manifest(
+        snapshot_id=TEST_SNAPSHOT_ID,
+        created_at=TEST_CREATED_AT,
+        source="src",
+        status="complete",
+        stats={"entry_count": 1, "regular_file_count": 1},
+        files={"foo\\bar": entry},
+    )
+    assert "foo/bar" in manifest.files
+    assert "foo\\bar" not in manifest.files
+
+
+def test_manifest_direct_construct_rejects_duplicate_normalized_paths():
+    entry_a = FileEntry(type="file", hash=manifest_hash("a"), size=1)
+    entry_b = FileEntry(type="file", hash=manifest_hash("b"), size=1)
+    with pytest.raises(ManifestError, match="Duplicate normalized"):
+        Manifest(
+            snapshot_id=TEST_SNAPSHOT_ID,
+            created_at=TEST_CREATED_AT,
+            source="src",
+            status="complete",
+            stats={"entry_count": 2, "regular_file_count": 2},
+            files={"foo/bar": entry_a, "foo\\bar": entry_b},
+        )
+
+
+def test_manifest_direct_construct_rejects_non_file_entry():
+    with pytest.raises(ManifestError, match="Manifest entry must be a FileEntry"):
+        Manifest(
+            snapshot_id=TEST_SNAPSHOT_ID,
+            created_at=TEST_CREATED_AT,
+            source="src",
+            status="complete",
+            stats={"entry_count": 0},
+            files={"bad.txt": {"type": "file", "hash": manifest_hash("x")}},  # type: ignore[dict-item]
+        )
+
+
+def test_manifest_rejects_file_with_nested_path_direct_construct():
+    parent = FileEntry(type="file", hash=manifest_hash("a"), size=1)
+    child = FileEntry(type="file", hash=manifest_hash("b"), size=1)
+    with pytest.raises(ManifestError, match="non-directory ancestor"):
+        Manifest(
+            snapshot_id=TEST_SNAPSHOT_ID,
+            created_at=TEST_CREATED_AT,
+            source="src",
+            status="complete",
+            stats={"entry_count": 2, "regular_file_count": 2},
+            files={"a": parent, "a/b.txt": child},
+        )
+
+
+def test_manifest_rejects_symlink_with_nested_path_from_dict():
+    payload = {
+        "version": 1,
+        "snapshot_id": TEST_SNAPSHOT_ID,
+        "created_at": TEST_CREATED_AT,
+        "source": "src",
+        "hash_algorithm": "sha256",
+        "status": "complete",
+        "stats": {},
+        "files": {
+            "link": {"type": "symlink", "target": "dest"},
+            "link/file": {"type": "file", "hash": manifest_hash("x")},
+        },
+    }
+    with pytest.raises(ManifestError, match="non-directory ancestor"):
+        Manifest.from_dict(payload)
+
+
+def test_manifest_allows_directory_with_nested_paths():
+    directory = FileEntry(type="directory")
+    child = FileEntry(type="file", hash=manifest_hash("b"), size=1)
+    manifest = Manifest(
+        snapshot_id=TEST_SNAPSHOT_ID,
+        created_at=TEST_CREATED_AT,
+        source="src",
+        status="complete",
+        stats={"entry_count": 2, "directory_count": 1, "regular_file_count": 1},
+        files={"a": directory, "a/b.txt": child},
+    )
+    assert manifest.files["a"].type == "directory"
+    assert manifest.files["a/b.txt"].type == "file"
+
+
 def test_manifest_duplicate_normalized_paths():
     payload = {
         "version": 1,
@@ -189,6 +303,18 @@ def test_manifest_store_save_writes_digest_sidecar(tmp_path: Path):
     sidecar = path.with_name(f"{path.name}.sha256")
     assert sidecar.exists()
     loaded = store.load(manifest.snapshot_id)
+    assert loaded.snapshot_id == manifest.snapshot_id
+
+
+def test_manifest_digest_accepts_uppercase_sidecar(tmp_path: Path):
+    store = ManifestStore(tmp_path)
+    store.init()
+    manifest = _sample_manifest()
+    path = store.save(manifest)
+    sidecar = manifest_digest_path(path)
+    sidecar.write_text(f"{sidecar.read_text(encoding='utf-8').strip().upper()}\n", encoding="utf-8")
+    verify_manifest_digest(path)
+    loaded = store.load_path(path)
     assert loaded.snapshot_id == manifest.snapshot_id
 
 

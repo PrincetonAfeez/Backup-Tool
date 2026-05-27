@@ -58,6 +58,21 @@ def test_clear_stale_lock_removes_dead_pid(tmp_path: Path):
     assert not lock_path.exists()
 
 
+def test_clear_stale_lock_removes_empty_lock_file(tmp_path: Path):
+    lock_path = tmp_path / "lock"
+    lock_path.write_bytes(b"")
+    assert clear_stale_lock(lock_path) is None
+    assert not lock_path.exists()
+
+
+def test_repository_lock_acquires_after_empty_lock_file(tmp_path: Path):
+    lock_path = tmp_path / "lock"
+    lock_path.write_bytes(b"")
+    with RepositoryLock(lock_path):
+        assert read_lock_pid(lock_path) == os.getpid()
+        assert read_lock_token(lock_path)
+
+
 def test_clear_stale_lock_keeps_live_pid(tmp_path: Path, monkeypatch):
     lock_path = tmp_path / "lock"
     lock_path.write_text(f"pid={os.getpid()}\ntime=0\n", encoding="utf-8")
@@ -85,16 +100,13 @@ def test_repository_lock_break_lock(tmp_path: Path):
 
 def test_repository_lock_write_failure_removes_partial_lock(tmp_path: Path, monkeypatch):
     lock_path = tmp_path / "lock"
-    real_replace = os.replace
 
-    def fail_replace(src, dst):
-        if str(dst) == str(lock_path):
-            raise OSError("simulated replace failure")
-        return real_replace(src, dst)
+    def fail_write(fd: int, data: bytes) -> int:
+        raise OSError("simulated write failure")
 
-    monkeypatch.setattr(os, "replace", fail_replace)
+    monkeypatch.setattr("backup_tool.lock._write_all", fail_write)
     lock = RepositoryLock(lock_path)
-    with pytest.raises(OSError, match="simulated replace failure"):
+    with pytest.raises(OSError, match="simulated write failure"):
         lock.acquire()
     assert not lock_path.exists()
 

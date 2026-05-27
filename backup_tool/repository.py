@@ -173,6 +173,7 @@ class Repository:
         break_lock: bool = False,
     ) -> RestoreResult:
         self._ensure_initialized()
+        self._validate_restore_destination(destination)
         with RepositoryLock(self.lock_path, break_lock=break_lock):
             manifest = self._resolve_snapshot(snapshot_id)
             return self.engine.restore_snapshot(
@@ -345,3 +346,22 @@ class Repository:
         except ValueError:
             return
         raise RepositoryError("source must not be inside the repository directory")
+
+    def _validate_restore_destination(self, destination: Path) -> None:
+        dest = destination.resolve()
+        repo = self.path.resolve()
+
+        if dest == repo:
+            raise RepositoryError("restore destination must not be the repository directory")
+
+        try:
+            dest.relative_to(repo)
+            raise RepositoryError("restore destination must not be inside the repository")
+        except ValueError:
+            pass
+
+        try:
+            repo.relative_to(dest)
+            raise RepositoryError("restore destination must not contain the repository")
+        except ValueError:
+            pass

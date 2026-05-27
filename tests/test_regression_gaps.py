@@ -12,11 +12,18 @@ import pytest
 
 from backup_tool import chunking as chunking_module
 from backup_tool.cli import main
-from backup_tool.manifest import write_manifest_digest
+from backup_tool.errors import IntegrityError, ManifestError, RestoreError
+from backup_tool.lock import RepositoryLock
+from backup_tool.manifest import FileEntry, Manifest, write_manifest_digest
 from backup_tool.paths import manifest_path_matches_exclude_pattern
 from backup_tool.repository import Repository
 from backup_tool.snapshot_engine import SnapshotEngine
-from tests.conftest import manifest_hash, symlink_required
+from tests.conftest import (
+    TEST_CREATED_AT,
+    TEST_SNAPSHOT_ID,
+    manifest_hash,
+    symlink_required,
+)
 
 
 def test_partial_backup_does_not_promote_orphan_staged_blobs(
@@ -185,3 +192,114 @@ def test_has_valid_blob_returns_false_on_hash_error(
 
     monkeypatch.setattr("backup_tool.object_store.hash_file", fail_hash)
     assert store.has_valid_blob(blob.hash_hex) is False
+
+
+def test_has_valid_blob_returns_false_on_integrity_error(
+    engine: SnapshotEngine,
+    monkeypatch,
+):
+    store = engine.object_store
+    blob = store.put_bytes(b"payload")
+
+    def fail_verify(_hash_hex: str) -> bool:
+        raise IntegrityError("Hash mismatch")
+
+    monkeypatch.setattr(store, "verify_blob", fail_verify)
+    assert store.has_valid_blob(blob.hash_hex) is False
+
+
+def test_check_reports_manifest_topology_conflict_on_disk(
+    repo: Repository,
+    source_dir: Path,
+):
+    (source_dir / "a.txt").write_text("hello", encoding="utf-8")
+    repo.backup(source_dir)
+    path = repo.manifest_store.path_for(repo.manifest_store.latest().snapshot_id)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["files"] = {
+        "parent": {"type": "file", "hash": manifest_hash("parent"), "size": 1},
+        "parent/child.txt": {"type": "file", "hash": manifest_hash("child"), "size": 1},
+    }
+    path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    write_manifest_digest(path)
+
+    result = repo.check()
+
+    assert result.ok is False
+    assert any("non-directory ancestor" in error for error in result.errors)
+
+
+def test_manifest_from_dict_rejects_invalid_created_at():
+    payload = {
+        "version": 1,
+        "snapshot_id": TEST_SNAPSHOT_ID,
+        "created_at": "not-a-timestamp",
+        "source": "src",
+        "hash_algorithm": "sha256",
+        "status": "complete",
+        "stats": {},
+        "files": {},
+    }
+    with pytest.raises(ManifestError, match="Invalid manifest created_at"):
+        Manifest.from_dict(payload)
+
+
+def test_repository_lock_acquire_leaves_no_temp_files(tmp_path: Path):
+    lock_path = tmp_path / "lock"
+    with RepositoryLock(lock_path):
+        assert lock_path.exists()
+        assert not list(lock_path.parent.glob(".lock.*.tmp"))
+
+
+def test_file_entry_from_dict_rejects_irrelevant_hash_on_symlink():
+    with pytest.raises(ManifestError, match="symlink entry must not include hash"):
+        FileEntry.from_dict(
+            {
+                "type": "symlink",
+                "target": "dest",
+                "hash": manifest_hash("unused"),
+            }
+        )
+
+
+def test_check_rejects_manifest_with_non_finite_mtime(
+    repo: Repository,
+    source_dir: Path,
+):
+    (source_dir / "a.txt").write_text("hello", encoding="utf-8")
+    repo.backup(source_dir)
+    path = repo.manifest_store.path_for(repo.manifest_store.latest().snapshot_id)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["files"]["a.txt"]["mtime"] = float("nan")
+    path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    write_manifest_digest(path)
+
+    result = repo.check()
+
+    assert result.ok is False
+    assert any("mtime must be finite" in error for error in result.errors)
+
+
+def test_restore_empty_snapshot_with_file_path_raises(
+    engine: SnapshotEngine,
+    source_dir: Path,
+    tmp_path: Path,
+):
+    manifest = engine.build_snapshot(source_dir, None).manifest
+    assert manifest is not None
+    assert len(manifest.files) == 0
+
+    with pytest.raises(RestoreError, match="No files matched"):
+        engine.restore_snapshot(manifest, tmp_path / "restore", file_path="missing.txt")
+
+
+def test_cli_main_catches_parser_system_exit():
+    with patch("backup_tool.cli.BackupToolArgumentParser.parse_args") as parse_args:
+        parse_args.side_effect = SystemExit(1)
+        assert main(["backup", str(Path.cwd())]) == 1
+
+
+def test_cli_main_maps_non_integer_system_exit_to_one():
+    with patch("backup_tool.cli.BackupToolArgumentParser.parse_args") as parse_args:
+        parse_args.side_effect = SystemExit("usage")
+        assert main(["backup", str(Path.cwd())]) == 1

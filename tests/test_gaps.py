@@ -79,10 +79,16 @@ def test_backup_rejects_source_inside_repo(tmp_path: Path):
         Repository(repo_path).backup(source)
 
 
-@pytest.mark.parametrize("payload", ["", "time=0\n"])
-def test_repository_lock_partial_or_empty_file_raises(tmp_path: Path, payload: str):
+def test_repository_lock_recovers_empty_lock_file(tmp_path: Path):
     lock_path = tmp_path / "lock"
-    lock_path.write_text(payload, encoding="utf-8")
+    lock_path.write_bytes(b"")
+    with RepositoryLock(lock_path):
+        assert lock_path.exists()
+
+
+def test_repository_lock_pidless_payload_raises(tmp_path: Path):
+    lock_path = tmp_path / "lock"
+    lock_path.write_text("time=0\n", encoding="utf-8")
     with pytest.raises(LockError, match="Repository is locked"):
         RepositoryLock(lock_path).acquire()
 

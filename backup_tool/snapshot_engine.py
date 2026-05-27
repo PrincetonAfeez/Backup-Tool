@@ -341,11 +341,13 @@ class SnapshotEngine:
         except Exception:
             if temp_path.exists() and temp_path != destination:
                 shutil.rmtree(temp_path, ignore_errors=True)
-            if old_path is not None and old_path.exists() and not os.path.lexists(destination):
+            if old_path is not None and os.path.lexists(old_path) and not os.path.lexists(
+                destination
+            ):
                 os.replace(old_path, destination)
             raise
         finally:
-            if old_path is not None and old_path.exists():
+            if old_path is not None and os.path.lexists(old_path):
                 if old_path.is_symlink():
                     old_path.unlink(missing_ok=True)
                 elif old_path.is_dir():

@@ -134,6 +134,41 @@ def test_repo_inside_source_is_excluded(tmp_path: Path):
     assert any("added to --exclude automatically" in warning for warning in result.warnings)
 
 
+def test_restore_rejects_repository_as_destination(
+    repo: Repository,
+    source_dir: Path,
+    repo_path: Path,
+):
+    (source_dir / "a.txt").write_text("hello", encoding="utf-8")
+    repo.backup(source_dir)
+    with pytest.raises(RepositoryError, match="restore destination must not be the repository"):
+        repo.restore("latest", repo.path, force=True)
+
+
+def test_restore_rejects_destination_inside_repository(
+    repo: Repository,
+    source_dir: Path,
+    repo_path: Path,
+):
+    (source_dir / "a.txt").write_text("hello", encoding="utf-8")
+    repo.backup(source_dir)
+    with pytest.raises(RepositoryError, match="restore destination must not be inside"):
+        repo.restore("latest", repo.path / "restored")
+
+
+def test_restore_rejects_destination_containing_repository(
+    tmp_path: Path,
+    source_dir: Path,
+):
+    repo_path = tmp_path / "parent" / "repo"
+    repo_path.parent.mkdir(parents=True)
+    (source_dir / "a.txt").write_text("hello", encoding="utf-8")
+    repo = Repository.init(repo_path)
+    repo.backup(source_dir)
+    with pytest.raises(RepositoryError, match="restore destination must not contain"):
+        repo.restore("latest", repo_path.parent, force=True)
+
+
 def test_empty_source_backup(repo: Repository, source_dir: Path):
     result = repo.backup(source_dir)
     assert result.committed

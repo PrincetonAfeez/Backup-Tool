@@ -133,6 +133,8 @@ See [docs/adr/README.md](docs/adr/README.md) for design decisions. [ADR 0009](do
 ## Safety Rules
 
 - Backup never mutates the source directory.
+- Restore refuses destinations that are the repository, inside the repository, or
+  a parent directory that contains the repository.
 - Restore writes into a fresh staging directory first, then atomically replaces
   the destination. Without `--force`, restore refuses when the destination already
   exists (file) or is non-empty (directory). With `--force`, the destination may

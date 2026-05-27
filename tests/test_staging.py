@@ -38,6 +38,17 @@ def test_staging_promoted_to_objects(store: ObjectStore):
     assert store.verify_blob(blob_hash)
 
 
+def test_promote_staging_without_filter_promotes_all_staged_blobs(store: ObjectStore):
+    first_hash = sha256(b"one").hexdigest()
+    second_hash = sha256(b"two").hexdigest()
+    store.begin_staging(TEST_SNAPSHOT_ID)
+    store.put_bytes(b"one")
+    store.put_bytes(b"two")
+    store.promote_staging(TEST_SNAPSHOT_ID)
+    assert store.get_path(first_hash).exists()
+    assert store.get_path(second_hash).exists()
+
+
 def test_promote_staging_skips_unreferenced_blobs(store: ObjectStore):
     keep_hash = sha256(b"keep").hexdigest()
     orphan_hash = sha256(b"orphan").hexdigest()

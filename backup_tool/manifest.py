@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import tempfile
 from dataclasses import dataclass, field
@@ -103,9 +104,8 @@ def verify_manifest_digest(manifest_path: Path) -> None:
     sidecar = manifest_digest_path(manifest_path)
     if not sidecar.exists():
         raise ManifestError(f"Manifest digest sidecar missing: {sidecar.name}")
-    expected = sidecar.read_text(encoding="utf-8").strip()
     try:
-        validate_hash(expected)
+        expected = validate_hash(sidecar.read_text(encoding="utf-8").strip())
     except StoreError as exc:
         raise ManifestError(f"Invalid manifest digest sidecar: {exc}") from exc
     actual = hash_file(manifest_path).hash_hex
@@ -135,7 +135,10 @@ def _validate_optional_mtime(mtime: Any) -> float | None:
         return None
     if isinstance(mtime, bool) or not isinstance(mtime, (int, float)):
         raise ManifestError("File entry mtime must be numeric")
-    return float(mtime)
+    value = float(mtime)
+    if not math.isfinite(value):
+        raise ManifestError("File entry mtime must be finite")
+    return value
 
 
 def _validate_optional_mode(mode: Any) -> int | None:
@@ -172,6 +175,40 @@ def _validate_manifest_source(source: Any) -> str:
     if not isinstance(source, str) or not source.strip():
         raise ManifestError("Manifest source must be a non-empty string")
     return source
+
+
+def _validate_manifest_topology(files: dict[str, FileEntry]) -> None:
+    """Reject paths nested under a file or symlink entry."""
+
+    for path in files:
+        parent = path
+        while True:
+            slash = parent.rfind("/")
+            if slash < 0:
+                break
+            parent = parent[:slash]
+            ancestor = files.get(parent)
+            if ancestor is not None and ancestor.type != "directory":
+                raise ManifestError(
+                    f"Manifest path conflicts with non-directory ancestor: "
+                    f"{path} (ancestor {parent} is {ancestor.type})"
+                )
+
+
+def _normalize_manifest_files(files: Any) -> dict[str, FileEntry]:
+    if not isinstance(files, dict):
+        raise ManifestError("Manifest files must be an object")
+
+    normalized_files: dict[str, FileEntry] = {}
+    for raw_path, entry in files.items():
+        path = normalize_manifest_path(raw_path)
+        if path in normalized_files:
+            raise ManifestError(f"Duplicate normalized manifest path: {path}")
+        if not isinstance(entry, FileEntry):
+            raise ManifestError(f"Manifest entry must be a FileEntry: {path}")
+        normalized_files[path] = entry
+    _validate_manifest_topology(normalized_files)
+    return normalized_files
 
 
 def _validate_symlink_target(target: Any) -> str:
@@ -222,14 +259,14 @@ class FileEntry:
         if self.type not in FILE_ENTRY_TYPES:
             raise ManifestError(f"Unsupported file entry type: {self.type}")
         _reject_irrelevant_entry_values(self)
+        if self.mtime is not None:
+            _validate_optional_mtime(self.mtime)
         if self.type == "file":
             if not self.hash:
                 raise ManifestError("File entry is missing hash")
             _validate_content_hash(self.hash)
             if self.size is not None:
                 _validate_optional_size(self.size)
-            if self.mtime is not None:
-                _validate_optional_mtime(self.mtime)
             if self.mode is not None:
                 _validate_optional_mode(self.mode)
             if self.chunks is not None:
@@ -247,8 +284,6 @@ class FileEntry:
                 _validate_optional_is_dir_symlink(self.is_dir_symlink)
         if self.type == "directory" and self.mode is not None:
             _validate_optional_mode(self.mode)
-        if self.type == "directory" and self.mtime is not None:
-            _validate_optional_mtime(self.mtime)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "FileEntry":
@@ -267,11 +302,20 @@ class FileEntry:
         if raw_chunks is not None:
             if not isinstance(raw_chunks, list) or not raw_chunks:
                 raise ManifestError("File entry chunks must be a non-empty list")
-            chunks = tuple(_validate_content_hash(str(item), field=f"chunks[{index}]") for index, item in enumerate(raw_chunks))
+            validated_chunks: list[str] = []
+            for index, item in enumerate(raw_chunks):
+                if not isinstance(item, str):
+                    raise ManifestError(f"File entry chunks[{index}] must be a string")
+                validated_chunks.append(
+                    _validate_content_hash(item, field=f"chunks[{index}]")
+                )
+            chunks = tuple(validated_chunks)
 
         file_hash = data.get("hash")
         if file_hash is not None:
-            file_hash = _validate_content_hash(str(file_hash))
+            if not isinstance(file_hash, str):
+                raise ManifestError("File entry hash must be a string")
+            file_hash = _validate_content_hash(file_hash)
 
         target = None
         if entry_type == "symlink":
@@ -345,6 +389,7 @@ class Manifest:
             raise ManifestError(f"Unsupported manifest status: {self.status}")
         object.__setattr__(self, "stats", validate_manifest_stats(self.stats))
         object.__setattr__(self, "skipped", validate_skipped_items(self.skipped))
+        object.__setattr__(self, "files", _normalize_manifest_files(self.files))
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "Manifest":

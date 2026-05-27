@@ -18,7 +18,7 @@ from backup_tool.object_store import ObjectStore
 from backup_tool.paths import validate_exclude_pattern
 from backup_tool.repository import Repository
 from backup_tool.snapshot_engine import SnapshotEngine
-from tests.conftest import TEST_SNAPSHOT_ID, manifest_hash, skip_skip_me
+from tests.conftest import TEST_SNAPSHOT_ID, manifest_hash, skip_skip_me, symlink_required
 
 
 @pytest.fixture
@@ -222,6 +222,61 @@ def test_restore_force_preserves_unrelated_old_sibling(engine: SnapshotEngine, s
 
     assert unrelated.read_text(encoding="utf-8") == "unrelated data"
     assert (destination / "a.txt").read_text(encoding="utf-8") == "hello"
+
+
+@symlink_required
+def test_restore_force_cleanup_removes_broken_symlink_old_path(
+    engine: SnapshotEngine,
+    source_dir: Path,
+    tmp_path: Path,
+):
+    (source_dir / "a.txt").write_text("hello", encoding="utf-8")
+    manifest = engine.build_snapshot(source_dir, None).manifest
+    destination = tmp_path / "broken_link"
+    destination.symlink_to("missing-target")
+    assert destination.is_symlink()
+    assert not destination.exists()
+
+    engine.restore_snapshot(manifest, destination, force=True)
+
+    assert (destination / "a.txt").read_text(encoding="utf-8") == "hello"
+    assert not any(p.name.startswith(".restore-old-") for p in tmp_path.iterdir())
+
+
+@symlink_required
+def test_restore_rollback_restores_broken_symlink_destination(
+    engine: SnapshotEngine,
+    source_dir: Path,
+    tmp_path: Path,
+    monkeypatch,
+):
+    import os
+
+    (source_dir / "a.txt").write_text("backup", encoding="utf-8")
+    manifest = engine.build_snapshot(source_dir, None).manifest
+    destination = tmp_path / "broken_link"
+    destination.symlink_to("missing-target")
+    assert destination.is_symlink()
+    assert not destination.exists()
+    dest_resolved = destination.resolve()
+    real_replace = os.replace
+
+    def fail_promote_staging(src, dst):
+        if (
+            Path(dst).resolve() == dest_resolved
+            and ".restore-old-" not in Path(src).name
+        ):
+            raise OSError("promote failed")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr("backup_tool.snapshot_engine.os.replace", fail_promote_staging)
+
+    with pytest.raises(OSError, match="promote failed"):
+        engine.restore_snapshot(manifest, destination, force=True)
+
+    assert destination.is_symlink()
+    assert os.readlink(destination) == "missing-target"
+    assert not any(p.name.startswith(".restore-old-") for p in tmp_path.iterdir())
 
 
 def test_manifest_save_rolls_back_when_sidecar_write_fails(tmp_path: Path, monkeypatch):
