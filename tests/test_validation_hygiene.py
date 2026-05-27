@@ -1,0 +1,103 @@
+"""Focused contract tests for validation and repository hygiene."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from backup_tool.errors import HashError, ManifestError, StoreError
+from backup_tool.manifest import FileEntry, Manifest
+from backup_tool.object_store import ObjectStore, validate_hash
+from backup_tool.staging import validate_created_at, validate_snapshot_id
+from backup_tool.repository import Repository
+from tests.conftest import TEST_CREATED_AT, TEST_SNAPSHOT_ID, manifest_hash
+
+
+@pytest.fixture
+def store(tmp_path: Path) -> ObjectStore:
+    object_store = ObjectStore(tmp_path / "objects", tmp_path / "tmp")
+    object_store.init()
+    return object_store
+
+
+def test_validate_hash_rejects_non_string_with_store_error():
+    with pytest.raises(StoreError, match="SHA-256 hash must be a string"):
+        validate_hash(123)  # type: ignore[arg-type]
+
+
+def test_file_entry_direct_construct_rejects_non_string_hash():
+    with pytest.raises(ManifestError, match="SHA-256 hash must be a string"):
+        FileEntry(type="file", hash=123, size=1)  # type: ignore[arg-type]
+
+
+def test_file_entry_direct_construct_rejects_non_string_chunk_hash():
+    with pytest.raises(ManifestError, match="Invalid file entry chunks\\[0\\]"):
+        FileEntry(
+            type="file",
+            hash=manifest_hash("whole"),
+            size=1,
+            chunks=(123,),  # type: ignore[arg-type]
+        )
+
+
+def test_validate_snapshot_id_rejects_non_string():
+    with pytest.raises(ManifestError, match="Snapshot id must be a string"):
+        validate_snapshot_id(123)  # type: ignore[arg-type]
+
+
+def test_validate_created_at_rejects_non_string():
+    with pytest.raises(ManifestError, match="Manifest created_at must be a string"):
+        validate_created_at(123)  # type: ignore[arg-type]
+
+
+def test_manifest_direct_construct_rejects_non_string_file_keys():
+    entry = FileEntry(type="file", hash=manifest_hash("x"), size=1)
+    with pytest.raises(ManifestError, match="file path must be a string or Path"):
+        Manifest(
+            snapshot_id=TEST_SNAPSHOT_ID,
+            created_at=TEST_CREATED_AT,
+            source="src",
+            status="complete",
+            stats={"entry_count": 1, "regular_file_count": 1},
+            files={123: entry},  # type: ignore[dict-item]
+        )
+
+
+def test_object_store_get_path_rejects_non_string_hash(store: ObjectStore):
+    with pytest.raises(StoreError, match="SHA-256 hash must be a string"):
+        store.get_path(123)  # type: ignore[arg-type]
+
+
+def test_check_reports_digest_verification_errors_instead_of_hash_error(
+    repo: Repository,
+    source_dir: Path,
+    monkeypatch,
+):
+    (source_dir / "a.txt").write_text("hello", encoding="utf-8")
+    repo.backup(source_dir)
+
+    def fail_hash(_path: Path, chunk_size: int = 1024 * 1024):
+        raise HashError("read failed")
+
+    monkeypatch.setattr("backup_tool.manifest.hash_file", fail_hash)
+
+    result = repo.check()
+
+    assert result.ok is False
+    assert any("Could not verify manifest digest" in error for error in result.errors)
+
+
+def test_check_warns_on_orphan_manifest_digest_sidecar(
+    repo: Repository,
+    source_dir: Path,
+):
+    (source_dir / "a.txt").write_text("hello", encoding="utf-8")
+    repo.backup(source_dir)
+    orphan = repo.snapshots_dir / "orphan.json.sha256"
+    orphan.write_text(f"{manifest_hash('orphan')}\n", encoding="utf-8")
+
+    result = repo.check()
+
+    assert result.ok is True
+    assert any("orphan manifest digest sidecar" in warning for warning in result.warnings)

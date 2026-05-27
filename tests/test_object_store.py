@@ -26,6 +26,7 @@ def test_validate_hash_normalizes_and_accepts_valid_hash():
     [
         ("short", "Invalid SHA-256 hash length"),
         ("g" * 64, "Invalid SHA-256 hash"),
+        (123, "SHA-256 hash must be a string"),
     ],
 )
 def test_validate_hash_rejects_invalid_hashes(bad_hash, match):

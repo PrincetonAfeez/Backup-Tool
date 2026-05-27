@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from backup_tool.errors import ManifestError
+from backup_tool.errors import HashError, ManifestError
 from backup_tool.manifest import (
     FileEntry,
     Manifest,
@@ -75,6 +75,11 @@ def test_file_entry_direct_construct_rejects_invalid_type():
 def test_file_entry_direct_construct_rejects_missing_file_hash():
     with pytest.raises(ManifestError, match="missing hash"):
         FileEntry(type="file")
+
+
+def test_file_entry_direct_construct_rejects_non_string_hash():
+    with pytest.raises(ManifestError, match="SHA-256 hash must be a string"):
+        FileEntry(type="file", hash=123, size=1)  # type: ignore[arg-type]
 
 
 def test_file_entry_direct_construct_rejects_invalid_symlink_mtime():
@@ -181,6 +186,19 @@ def test_manifest_rejects_non_object_stats():
     }
     with pytest.raises(ManifestError, match="Manifest stats must be an object"):
         Manifest.from_dict(payload)
+
+
+def test_manifest_direct_construct_rejects_non_string_file_keys():
+    entry = FileEntry(type="file", hash=manifest_hash("x"), size=1)
+    with pytest.raises(ManifestError, match="file path must be a string or Path"):
+        Manifest(
+            snapshot_id=TEST_SNAPSHOT_ID,
+            created_at=TEST_CREATED_AT,
+            source="src",
+            status="complete",
+            stats={"entry_count": 1, "regular_file_count": 1},
+            files={123: entry},  # type: ignore[dict-item]
+        )
 
 
 def test_manifest_direct_construct_normalizes_file_paths():
@@ -318,6 +336,36 @@ def test_manifest_digest_accepts_uppercase_sidecar(tmp_path: Path):
     assert loaded.snapshot_id == manifest.snapshot_id
 
 
+def test_verify_manifest_digest_wraps_hash_error(tmp_path: Path, monkeypatch):
+    store = ManifestStore(tmp_path)
+    store.init()
+    path = store.save(_sample_manifest())
+
+    def fail_hash(_path: Path, chunk_size: int = 1024 * 1024):
+        raise HashError("read failed")
+
+    monkeypatch.setattr("backup_tool.manifest.hash_file", fail_hash)
+    with pytest.raises(ManifestError, match="Could not verify manifest digest"):
+        verify_manifest_digest(path)
+
+
+def test_verify_manifest_digest_wraps_sidecar_read_error(tmp_path: Path, monkeypatch):
+    store = ManifestStore(tmp_path)
+    store.init()
+    path = store.save(_sample_manifest())
+    sidecar = manifest_digest_path(path)
+    real_read_text = Path.read_text
+
+    def selective_read(self: Path, *args, **kwargs):
+        if self == sidecar:
+            raise OSError("permission denied")
+        return real_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", selective_read)
+    with pytest.raises(ManifestError, match="Could not verify manifest digest"):
+        verify_manifest_digest(path)
+
+
 def test_manifest_digest_rejects_tampered_file(tmp_path: Path):
     store = ManifestStore(tmp_path)
     store.init()
@@ -405,6 +453,60 @@ def test_manifest_rejects_invalid_snapshot_id_on_construct():
             stats={"entry_count": 0},
             files={},
         )
+
+
+def test_manifest_rejects_non_string_snapshot_id_on_construct():
+    with pytest.raises(ManifestError, match="Snapshot id must be a string"):
+        Manifest(
+            snapshot_id=123,  # type: ignore[arg-type]
+            created_at=TEST_CREATED_AT,
+            source="src",
+            status="complete",
+            stats={"entry_count": 0},
+            files={},
+        )
+
+
+def test_manifest_from_dict_rejects_non_string_snapshot_id():
+    payload = {
+        "version": 1,
+        "snapshot_id": 1,
+        "created_at": TEST_CREATED_AT,
+        "source": "src",
+        "hash_algorithm": "sha256",
+        "status": "complete",
+        "stats": {},
+        "files": {},
+    }
+    with pytest.raises(ManifestError, match="Snapshot id must be a string"):
+        Manifest.from_dict(payload)
+
+
+def test_manifest_rejects_non_string_created_at_on_construct():
+    with pytest.raises(ManifestError, match="Manifest created_at must be a string"):
+        Manifest(
+            snapshot_id=TEST_SNAPSHOT_ID,
+            created_at=123,  # type: ignore[arg-type]
+            source="src",
+            status="complete",
+            stats={"entry_count": 0},
+            files={},
+        )
+
+
+def test_manifest_from_dict_rejects_non_string_created_at():
+    payload = {
+        "version": 1,
+        "snapshot_id": TEST_SNAPSHOT_ID,
+        "created_at": 1,
+        "source": "src",
+        "hash_algorithm": "sha256",
+        "status": "complete",
+        "stats": {},
+        "files": {},
+    }
+    with pytest.raises(ManifestError, match="Manifest created_at must be a string"):
+        Manifest.from_dict(payload)
 
 
 def test_manifest_rejects_invalid_created_at():

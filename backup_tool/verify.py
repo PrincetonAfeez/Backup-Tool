@@ -132,6 +132,16 @@ def check_repository(repo: Repository, *, repair: bool = False) -> CheckResult:
     if stale_lock_tmp:
         warnings.append(f"{len(stale_lock_tmp)} stale lock tmp file(s) found")
 
+    orphan_digest_sidecars = sorted(
+        sidecar
+        for sidecar in repo.snapshots_dir.glob("*.json.sha256")
+        if not sidecar.with_name(sidecar.name.removesuffix(".sha256")).exists()
+    )
+    if orphan_digest_sidecars:
+        warnings.append(
+            f"{len(orphan_digest_sidecars)} orphan manifest digest sidecar(s) found"
+        )
+
     known_snapshot_ids = {
         path.stem
         for path in repo.manifest_store.list_paths()

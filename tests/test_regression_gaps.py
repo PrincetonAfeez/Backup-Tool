@@ -142,6 +142,41 @@ def test_cli_restore_partial_symlink_returns_exit_code_three(
     assert "partial" in stderr.getvalue().lower() or "warning" in stderr.getvalue().lower()
 
 
+def test_check_reports_manifest_digest_hash_failure(
+    repo: Repository,
+    source_dir: Path,
+    monkeypatch,
+):
+    from backup_tool.errors import HashError
+
+    (source_dir / "a.txt").write_text("hello", encoding="utf-8")
+    repo.backup(source_dir)
+
+    def fail_hash(_path: Path, chunk_size: int = 1024 * 1024):
+        raise HashError("read failed")
+
+    monkeypatch.setattr("backup_tool.manifest.hash_file", fail_hash)
+    result = repo.check()
+
+    assert result.ok is False
+    assert any("Could not verify manifest digest" in error for error in result.errors)
+
+
+def test_check_warns_on_orphan_manifest_digest_sidecar(
+    repo: Repository,
+    source_dir: Path,
+):
+    (source_dir / "a.txt").write_text("hello", encoding="utf-8")
+    repo.backup(source_dir)
+    orphan = repo.snapshots_dir / "orphan.json.sha256"
+    orphan.write_text(f"{manifest_hash('orphan')}\n", encoding="utf-8")
+
+    result = repo.check()
+
+    assert result.ok is True
+    assert any("orphan manifest digest sidecar" in warning for warning in result.warnings)
+
+
 def test_check_reports_missing_derived_stat_keys(
     repo: Repository,
     source_dir: Path,

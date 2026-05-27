@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from backup_tool.atomic import atomic_write_text, fsync_directory
-from backup_tool.errors import ManifestError, StoreError
+from backup_tool.errors import HashError, ManifestError, StoreError
 from backup_tool.hashing import hash_file
 from backup_tool.object_store import validate_hash
 from backup_tool.paths import normalize_manifest_path
@@ -106,9 +106,11 @@ def verify_manifest_digest(manifest_path: Path) -> None:
         raise ManifestError(f"Manifest digest sidecar missing: {sidecar.name}")
     try:
         expected = validate_hash(sidecar.read_text(encoding="utf-8").strip())
-    except StoreError as exc:
-        raise ManifestError(f"Invalid manifest digest sidecar: {exc}") from exc
-    actual = hash_file(manifest_path).hash_hex
+        actual = hash_file(manifest_path).hash_hex
+    except (OSError, HashError, StoreError) as exc:
+        raise ManifestError(
+            f"Could not verify manifest digest for {manifest_path.name}: {exc}"
+        ) from exc
     if actual != expected:
         raise ManifestError(f"Manifest digest mismatch for {manifest_path.name}")
 
@@ -201,6 +203,8 @@ def _normalize_manifest_files(files: Any) -> dict[str, FileEntry]:
 
     normalized_files: dict[str, FileEntry] = {}
     for raw_path, entry in files.items():
+        if not isinstance(raw_path, (str, Path)):
+            raise ManifestError("Manifest file path must be a string or Path")
         path = normalize_manifest_path(raw_path)
         if path in normalized_files:
             raise ManifestError(f"Duplicate normalized manifest path: {path}")
@@ -417,8 +421,8 @@ class Manifest:
         stats_data = data["stats"]
         stats = validate_manifest_stats(stats_data)
         skipped = validate_skipped_items(data.get("skipped", []))
-        snapshot_id = validate_snapshot_id(str(data["snapshot_id"]))
-        created_at = validate_created_at(str(data["created_at"]))
+        snapshot_id = validate_snapshot_id(data["snapshot_id"])
+        created_at = validate_created_at(data["created_at"])
         source = _validate_manifest_source(data.get("source"))
 
         files: dict[str, FileEntry] = {}

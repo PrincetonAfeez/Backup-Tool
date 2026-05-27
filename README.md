@@ -39,8 +39,10 @@ backup-tool migrate manifest-digests --repo <path> [--break-lock]
 ```
 
 Mutating commands accept `--break-lock` to remove a lock file left behind by a
-crashed process. Locks whose recorded PID is no longer running are cleared
-automatically. Use `backup --verbose` to see when a stale lock was removed.
+crashed process. Locks whose recorded PID is no longer running, empty lock
+files, and malformed lock files older than 24 hours are cleared automatically.
+Recent malformed non-empty locks still require `--break-lock`. Use
+`backup --verbose` to see when a stale lock was removed.
 
 `list` marks the newest snapshot with `*` and highlights partial snapshots with
 `[PARTIAL]`.

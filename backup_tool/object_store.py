@@ -28,7 +28,9 @@ class BlobInfo:
     bytes_stored: int
 
 
-def validate_hash(hash_hex: str) -> str:
+def validate_hash(hash_hex: object) -> str:
+    if not isinstance(hash_hex, str):
+        raise StoreError("SHA-256 hash must be a string")
     if len(hash_hex) != 64:
         raise StoreError(f"Invalid SHA-256 hash length: {hash_hex}")
     try:

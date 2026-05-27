@@ -37,13 +37,17 @@ CREATED_AT_RE = re.compile(
 )
 
 
-def validate_snapshot_id(snapshot_id: str) -> str:
+def validate_snapshot_id(snapshot_id: object) -> str:
+    if not isinstance(snapshot_id, str):
+        raise ManifestError("Snapshot id must be a string")
     if not SNAPSHOT_ID_RE.fullmatch(snapshot_id):
         raise ManifestError(f"Invalid snapshot id: {snapshot_id}")
     return snapshot_id
 
 
-def validate_created_at(created_at: str) -> str:
+def validate_created_at(created_at: object) -> str:
+    if not isinstance(created_at, str):
+        raise ManifestError("Manifest created_at must be a string")
     if not CREATED_AT_RE.fullmatch(created_at):
         raise ManifestError(f"Invalid manifest created_at: {created_at}")
     try:

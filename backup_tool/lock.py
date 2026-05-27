@@ -13,6 +13,7 @@ from backup_tool.errors import LockError
 
 
 ERROR_ACCESS_DENIED = 5
+DEFAULT_LOCK_STALE_SECONDS = 24 * 3600
 
 
 def read_lock_pid(path: Path) -> int | None:
@@ -89,6 +90,10 @@ def is_process_alive(pid: int) -> bool:
 def clear_stale_lock(path: Path) -> int | None:
     """Remove a lock file when its owning process is no longer alive.
 
+    Empty locks and malformed locks without a ``pid=`` line are removed when
+    they are older than :data:`DEFAULT_LOCK_STALE_SECONDS`. Recent malformed
+    locks still require ``--break-lock``.
+
     Returns the cleared PID, or None when no stale lock was removed.
     """
 
@@ -98,10 +103,14 @@ def clear_stale_lock(path: Path) -> int | None:
     pid = read_lock_pid(path)
     if pid is None:
         try:
-            if path.stat().st_size == 0:
-                path.unlink(missing_ok=True)
+            stat = path.stat()
         except OSError:
             return None
+        if stat.st_size == 0:
+            path.unlink(missing_ok=True)
+            return None
+        if stat.st_mtime < time.time() - DEFAULT_LOCK_STALE_SECONDS:
+            path.unlink(missing_ok=True)
         return None
 
     if is_process_alive(pid):

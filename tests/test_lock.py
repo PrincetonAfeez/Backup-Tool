@@ -4,12 +4,21 @@ from __future__ import annotations
 
 import os
 import threading
+import time
 from pathlib import Path
 
 import pytest
 
 from backup_tool.errors import LockError
-from backup_tool.lock import ERROR_ACCESS_DENIED, RepositoryLock, clear_stale_lock, is_process_alive, read_lock_pid, read_lock_token
+from backup_tool.lock import (
+    DEFAULT_LOCK_STALE_SECONDS,
+    ERROR_ACCESS_DENIED,
+    RepositoryLock,
+    clear_stale_lock,
+    is_process_alive,
+    read_lock_pid,
+    read_lock_token,
+)
 
 
 def test_read_lock_pid_parses_pid(tmp_path: Path):
@@ -71,6 +80,31 @@ def test_repository_lock_acquires_after_empty_lock_file(tmp_path: Path):
     with RepositoryLock(lock_path):
         assert read_lock_pid(lock_path) == os.getpid()
         assert read_lock_token(lock_path)
+
+
+def test_clear_stale_lock_removes_old_malformed_lock(tmp_path: Path):
+    lock_path = tmp_path / "lock"
+    lock_path.write_text("time=0\n", encoding="utf-8")
+    old = time.time() - DEFAULT_LOCK_STALE_SECONDS - 60
+    os.utime(lock_path, (old, old))
+    assert clear_stale_lock(lock_path) is None
+    assert not lock_path.exists()
+
+
+def test_repository_lock_acquires_after_old_malformed_lock(tmp_path: Path):
+    lock_path = tmp_path / "lock"
+    lock_path.write_text("time=0\n", encoding="utf-8")
+    old = time.time() - DEFAULT_LOCK_STALE_SECONDS - 60
+    os.utime(lock_path, (old, old))
+    with RepositoryLock(lock_path):
+        assert read_lock_pid(lock_path) == os.getpid()
+
+
+def test_clear_stale_lock_keeps_recent_malformed_lock(tmp_path: Path):
+    lock_path = tmp_path / "lock"
+    lock_path.write_text("time=0\n", encoding="utf-8")
+    assert clear_stale_lock(lock_path) is None
+    assert lock_path.exists()
 
 
 def test_clear_stale_lock_keeps_live_pid(tmp_path: Path, monkeypatch):
