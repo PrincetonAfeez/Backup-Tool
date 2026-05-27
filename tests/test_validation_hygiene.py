@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from backup_tool.cli import main
+from backup_tool.cli import build_parser, main
 from backup_tool.errors import HashError, LockError, ManifestError, RepositoryError, StoreError
 from backup_tool.lock import (
     DEFAULT_LOCK_STALE_SECONDS,
@@ -147,6 +147,50 @@ def test_check_repair_removes_orphan_manifest_digest_sidecar(
     assert result.repaired is True
     assert not orphan.exists()
     assert any("Removed 1 orphan manifest digest sidecar" in warning for warning in result.warnings)
+
+
+def test_check_repair_help_describes_full_hygiene_actions():
+    parser = build_parser()
+    check_parser = parser._subparsers._group_actions[0].choices["check"]
+    repair_action = next(action for action in check_parser._actions if action.dest == "repair")
+    help_text = repair_action.help or ""
+
+    assert "quarantine malformed object paths" in help_text
+    assert "orphan manifest digest sidecar" in help_text
+    assert "orphan staging" in help_text
+
+
+def test_object_store_exists_requires_valid_or_staged_blob(store: ObjectStore):
+    blob = store.put_bytes(b"payload")
+    assert store.exists(blob.hash_hex)
+
+    path = store.get_path(blob.hash_hex)
+    path.write_text("corrupt", encoding="utf-8")
+    assert path.is_file()
+    assert store.exists(blob.hash_hex) is False
+    assert store.has_valid_blob(blob.hash_hex) is False
+
+
+def test_backup_keeps_repaired_blob_when_post_verify_fails(
+    repo: Repository,
+    source_dir: Path,
+    monkeypatch,
+):
+    (source_dir / "a.txt").write_text("hello", encoding="utf-8")
+    first = repo.backup(source_dir)
+    blob_hash = first.manifest.files["a.txt"].hash
+    assert blob_hash is not None
+    repo.object_store.get_path(blob_hash).write_text("corrupt", encoding="utf-8")
+
+    def fail_verify(_manifest):
+        raise RepositoryError("Manifest references invalid blobs: a.txt: bad")
+
+    monkeypatch.setattr(repo, "_ensure_manifest_blobs_exist", fail_verify)
+
+    with pytest.raises(RepositoryError, match="invalid blobs"):
+        repo.backup(source_dir)
+
+    assert repo.object_store.has_valid_blob(blob_hash)
 
 
 def test_backup_removes_promoted_blobs_when_post_verify_fails(

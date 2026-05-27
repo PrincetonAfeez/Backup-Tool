@@ -127,7 +127,7 @@ class Repository:
                 self._ensure_manifest_blobs_exist(result.manifest)
             except RepositoryError:
                 result.warnings.extend(
-                    self._remove_promoted_blobs(result.promoted_blob_hashes)
+                    self._remove_promoted_blobs(result.promotion.new_blobs)
                 )
                 raise
             self.manifest_store.save(result.manifest)

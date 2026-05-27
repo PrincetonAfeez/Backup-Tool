@@ -131,7 +131,8 @@ def test_has_valid_blob_rejects_corrupt_existing_file(store: ObjectStore):
     blob = store.put_bytes(b"payload")
     path = store.get_path(blob.hash_hex)
     path.write_text("corrupt", encoding="utf-8")
-    assert store.exists(blob.hash_hex)
+    assert path.is_file()
+    assert store.exists(blob.hash_hex) is False
     assert store.has_valid_blob(blob.hash_hex) is False
 
 

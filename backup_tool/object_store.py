@@ -28,6 +28,16 @@ class BlobInfo:
     bytes_stored: int
 
 
+@dataclass(frozen=True)
+class PromotionResult:
+    new_blobs: frozenset[str]
+    repaired_blobs: frozenset[str]
+
+    @property
+    def all_promoted(self) -> frozenset[str]:
+        return self.new_blobs | self.repaired_blobs
+
+
 def validate_hash(hash_hex: object) -> str:
     if not isinstance(hash_hex, str):
         raise StoreError("SHA-256 hash must be a string")
@@ -81,11 +91,12 @@ class ObjectStore:
         snapshot_id: str | None = None,
         *,
         allowed_hashes: set[str] | frozenset[str] | None = None,
-    ) -> frozenset[str]:
+    ) -> PromotionResult:
         sid = snapshot_id or self._active_staging
-        promoted: set[str] = set()
+        new_blobs: set[str] = set()
+        repaired_blobs: set[str] = set()
         if sid is None:
-            return frozenset()
+            return PromotionResult(frozenset(), frozenset())
         root = self.staging_root(sid)
         allowed: set[str] | None = None
         if allowed_hashes is not None:
@@ -107,14 +118,17 @@ class ObjectStore:
                 if final_path.exists() and self._existing_blob_valid(hash_hex):
                     path.unlink(missing_ok=True)
                     continue
+                if final_path.is_file():
+                    repaired_blobs.add(hash_hex)
+                else:
+                    new_blobs.add(hash_hex)
                 final_path.parent.mkdir(parents=True, exist_ok=True)
                 os.replace(path, final_path)
                 fsync_directory(final_path.parent)
-                promoted.add(hash_hex)
             shutil.rmtree(root, ignore_errors=True)
         if self._active_staging == sid:
             self._active_staging = None
-        return frozenset(promoted)
+        return PromotionResult(frozenset(new_blobs), frozenset(repaired_blobs))
 
     def has_staged_blob(self, hash_hex: str) -> bool:
         if self._active_staging is None:
@@ -126,10 +140,10 @@ class ObjectStore:
         return self.objects_dir / hash_hex[:2] / hash_hex
 
     def exists(self, hash_hex: str) -> bool:
+        """Return True when a valid final blob or staged blob exists for ``hash_hex``."""
+
         hash_hex = validate_hash(hash_hex)
-        if self.get_path(hash_hex).is_file():
-            return True
-        return self.has_staged_blob(hash_hex)
+        return self.has_valid_blob(hash_hex) or self.has_staged_blob(hash_hex)
 
     def _write_target_path(self, hash_hex: str) -> Path:
         if self._active_staging is not None:

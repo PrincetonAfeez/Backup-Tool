@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from backup_tool.object_store import ObjectStore
+from backup_tool.object_store import ObjectStore, PromotionResult
 from backup_tool.repository import Repository
 from tests.conftest import TEST_SNAPSHOT_ID, skip_skip_me
 
@@ -47,6 +47,32 @@ def test_promote_staging_without_filter_promotes_all_staged_blobs(store: ObjectS
     store.promote_staging(TEST_SNAPSHOT_ID)
     assert store.get_path(first_hash).exists()
     assert store.get_path(second_hash).exists()
+
+
+def test_promote_staging_classifies_new_and_repaired_blobs(store: ObjectStore):
+    blob_hash = sha256(b"payload").hexdigest()
+    store.put_bytes(b"payload")
+    path = store.get_path(blob_hash)
+    path.write_text("corrupt", encoding="utf-8")
+
+    store.begin_staging(TEST_SNAPSHOT_ID)
+    store.put_bytes(b"payload")
+    result = store.promote_staging(TEST_SNAPSHOT_ID, allowed_hashes={blob_hash})
+
+    assert isinstance(result, PromotionResult)
+    assert blob_hash in result.repaired_blobs
+    assert blob_hash not in result.new_blobs
+    assert store.has_valid_blob(blob_hash)
+
+
+def test_promote_staging_classifies_new_blob_without_existing_final(store: ObjectStore):
+    blob_hash = sha256(b"fresh").hexdigest()
+    store.begin_staging(TEST_SNAPSHOT_ID)
+    store.put_bytes(b"fresh")
+    result = store.promote_staging(TEST_SNAPSHOT_ID, allowed_hashes={blob_hash})
+
+    assert blob_hash in result.new_blobs
+    assert blob_hash not in result.repaired_blobs
 
 
 def test_promote_staging_skips_unreferenced_blobs(store: ObjectStore):

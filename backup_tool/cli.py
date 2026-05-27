@@ -84,7 +84,10 @@ def build_parser() -> BackupToolArgumentParser:
     check_parser.add_argument(
         "--repair",
         action="store_true",
-        help="quarantine malformed object paths into tmp/quarantine/",
+        help=(
+            "repair safe repository hygiene issues: quarantine malformed object paths, "
+            "remove orphan manifest digest sidecars, and remove stale orphan staging dirs"
+        ),
     )
     _add_break_lock(check_parser)
 

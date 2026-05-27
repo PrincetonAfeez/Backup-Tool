@@ -18,7 +18,7 @@ from backup_tool.diff import DiffResult, classify_entries
 from backup_tool.errors import HashError, ManifestError, RestoreError, StoreError
 from backup_tool.manifest import FileEntry, Manifest
 from backup_tool.metadata import restore_entry_metadata
-from backup_tool.object_store import ObjectStore
+from backup_tool.object_store import ObjectStore, PromotionResult
 from backup_tool.staging import staging_snapshot_id
 from backup_tool.paths import (
     assert_safe_symlink_target,
@@ -51,7 +51,13 @@ class SnapshotResult:
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     stale_lock_cleared_pid: int | None = None
-    promoted_blob_hashes: frozenset[str] = field(default_factory=frozenset)
+    promotion: PromotionResult = field(
+        default_factory=lambda: PromotionResult(frozenset(), frozenset())
+    )
+
+    @property
+    def promoted_blob_hashes(self) -> frozenset[str]:
+        return self.promotion.all_promoted
 
     @property
     def status(self) -> str:
@@ -214,7 +220,7 @@ class SnapshotEngine:
                 skipped=[item.to_dict() for item in skipped],
             )
 
-            promoted_blob_hashes: frozenset[str] = frozenset()
+            promotion = PromotionResult(frozenset(), frozenset())
             if staging_active:
                 referenced_hashes = {
                     blob_hash
@@ -222,7 +228,7 @@ class SnapshotEngine:
                     if entry.type == "file"
                     for blob_hash in file_blob_hashes(entry)
                 }
-                promoted_blob_hashes = self.object_store.promote_staging(
+                promotion = self.object_store.promote_staging(
                     snapshot_id,
                     allowed_hashes=referenced_hashes,
                 )
@@ -234,7 +240,7 @@ class SnapshotEngine:
                 dry_run=dry_run,
                 skipped=skipped,
                 errors=errors,
-                promoted_blob_hashes=promoted_blob_hashes,
+                promotion=promotion,
             )
         finally:
             if staging_active:
