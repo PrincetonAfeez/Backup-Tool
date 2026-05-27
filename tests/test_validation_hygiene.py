@@ -16,6 +16,7 @@ from backup_tool.lock import (
     DEFAULT_LOCK_STALE_SECONDS,
     RepositoryLock,
     read_lock_pid,
+    read_lock_token,
 )
 from backup_tool.verify import check_repository
 from backup_tool.manifest import (
@@ -182,14 +183,26 @@ def test_backup_keeps_repaired_blob_when_post_verify_fails(
     assert blob_hash is not None
     repo.object_store.get_path(blob_hash).write_text("corrupt", encoding="utf-8")
 
+    captured_promotions: list = []
+    real_build_snapshot = repo.engine.build_snapshot
+
+    def capture_build_snapshot(*args, **kwargs):
+        result = real_build_snapshot(*args, **kwargs)
+        captured_promotions.append(result.promotion)
+        return result
+
     def fail_verify(_manifest):
         raise RepositoryError("Manifest references invalid blobs: a.txt: bad")
 
+    monkeypatch.setattr(repo.engine, "build_snapshot", capture_build_snapshot)
     monkeypatch.setattr(repo, "_ensure_manifest_blobs_exist", fail_verify)
 
     with pytest.raises(RepositoryError, match="invalid blobs"):
         repo.backup(source_dir)
 
+    assert captured_promotions
+    assert blob_hash in captured_promotions[-1].repaired_blobs
+    assert blob_hash not in captured_promotions[-1].new_blobs
     assert repo.object_store.has_valid_blob(blob_hash)
 
 
@@ -333,16 +346,26 @@ def test_backup_cleanup_failure_does_not_mask_verify_error(
         repo.backup(source_dir)
 
 
-def test_read_repo_metadata_rejects_non_utf8_repo_json(repo_path: Path):
+def test_invalid_utf8_repo_json_raises_on_repository_open(repo_path: Path):
     Repository.init(repo_path)
-    repo_path.joinpath("repo.json").write_bytes(b"\xff\xfe not utf-8")
+    repo = Repository(repo_path)
+    repo.repo_json.write_bytes(b"\xff")
 
     with pytest.raises(RepositoryError, match="Invalid repo.json"):
-        Repository(repo_path).list_snapshots()
+        repo.list_snapshots()
 
 
-def test_check_reports_non_utf8_repo_json(repo: Repository):
-    repo.repo_json.write_bytes(b"\xff\xfe not utf-8")
+def test_invalid_utf8_repo_json_check_reports_error(repo: Repository):
+    repo.repo_json.write_bytes(b"\xff")
+
+    result = repo.check()
+
+    assert result.ok is False
+    assert any("Invalid repo.json" in error for error in result.errors)
+
+
+def test_invalid_utf8_repo_json_check_repository_reports_error(repo: Repository):
+    repo.repo_json.write_bytes(b"\xff")
 
     result = check_repository(repo)
 
@@ -350,16 +373,38 @@ def test_check_reports_non_utf8_repo_json(repo: Repository):
     assert any("Invalid repo.json" in error for error in result.errors)
 
 
-def test_read_lock_pid_treats_non_utf8_lock_as_unparseable(tmp_path: Path):
+def test_invalid_utf8_repo_json_cli_does_not_return_internal_error(
+    repo_path: Path,
+    source_dir: Path,
+):
+    Repository.init(repo_path)
+    repo_path.joinpath("repo.json").write_bytes(b"\xff")
+    stderr = io.StringIO()
+
+    with redirect_stderr(stderr):
+        backup_code = main(["backup", str(source_dir), "--repo", str(repo_path)])
+        check_code = main(["check", "--repo", str(repo_path)])
+
+    assert backup_code == 1
+    assert check_code == 2
+    assert backup_code != 4
+    assert check_code != 4
+    stderr_text = stderr.getvalue()
+    assert "Invalid repo.json" in stderr_text
+    assert "internal error" not in stderr_text.lower()
+
+
+def test_invalid_utf8_lock_file_returns_none_from_readers(tmp_path: Path):
     lock_path = tmp_path / "lock"
-    lock_path.write_bytes(b"\xff\xfe")
+    lock_path.write_bytes(b"\xff")
 
     assert read_lock_pid(lock_path) is None
+    assert read_lock_token(lock_path) is None
 
 
 def test_repository_lock_acquires_after_old_non_utf8_lock(tmp_path: Path):
     lock_path = tmp_path / "lock"
-    lock_path.write_bytes(b"\xff\xfe")
+    lock_path.write_bytes(b"\xff")
     old = time.time() - DEFAULT_LOCK_STALE_SECONDS - 60
     os.utime(lock_path, (old, old))
 
@@ -369,41 +414,10 @@ def test_repository_lock_acquires_after_old_non_utf8_lock(tmp_path: Path):
 
 def test_repository_lock_rejects_recent_non_utf8_lock(tmp_path: Path):
     lock_path = tmp_path / "lock"
-    lock_path.write_bytes(b"\xff\xfe")
+    lock_path.write_bytes(b"\xff")
 
     with pytest.raises(LockError, match="Repository is locked"):
         RepositoryLock(lock_path).acquire()
-
-
-def test_cli_backup_invalid_utf8_repo_json_returns_one_not_four(
-    repo_path: Path,
-    source_dir: Path,
-):
-    Repository.init(repo_path)
-    repo_path.joinpath("repo.json").write_bytes(b"\xff\xfe")
-    stderr = io.StringIO()
-
-    with redirect_stderr(stderr):
-        code = main(["backup", str(source_dir), "--repo", str(repo_path)])
-
-    assert code == 1
-    assert code != 4
-    assert "Invalid repo.json" in stderr.getvalue()
-    assert "internal error" not in stderr.getvalue().lower()
-
-
-def test_cli_check_invalid_utf8_repo_json_returns_two_not_four(repo_path: Path):
-    Repository.init(repo_path)
-    repo_path.joinpath("repo.json").write_bytes(b"\xff\xfe")
-    stderr = io.StringIO()
-
-    with redirect_stderr(stderr):
-        code = main(["check", "--repo", str(repo_path)])
-
-    assert code == 2
-    assert code != 4
-    assert "Invalid repo.json" in stderr.getvalue()
-    assert "internal error" not in stderr.getvalue().lower()
 
 
 def test_check_warns_on_orphan_manifest_digest_sidecar(
