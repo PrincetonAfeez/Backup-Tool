@@ -385,6 +385,36 @@ def test_restore_force_rollback_after_final_replace_failure(
     assert (destination / "precious.txt").read_text(encoding="utf-8") == "keep me"
 
 
+def test_walk_source_onerror_handles_manifest_error_path(engine: SnapshotEngine, source_dir: Path):
+    from backup_tool.paths import source_relative_path as real_relative
+
+    outside = source_dir / "outside"
+    outside.mkdir()
+
+    def selective_relative(source: Path, path: Path) -> str:
+        if path == outside:
+            raise ManifestError("path outside source tree")
+        return real_relative(source, path)
+
+    real_walk = os.walk
+
+    def walk_with_outside_error(top, *args, **kwargs):
+        onerror = kwargs.get("onerror")
+        for root, dirnames, filenames in real_walk(top, *args, **kwargs):
+            if onerror is not None and Path(root) == source_dir:
+                onerror(OSError(13, "permission denied", str(outside)))
+                dirnames.clear()
+            yield root, dirnames, filenames
+
+    with (
+        patch("backup_tool.snapshot_engine.source_relative_path", selective_relative),
+        patch("backup_tool.snapshot_engine.os.walk", walk_with_outside_error),
+    ):
+        _found, skipped = engine._walk_source(source_dir, [])
+
+    assert any(item.path == "outside" and "could not scan directory" in item.reason for item in skipped)
+
+
 def test_walk_source_records_scan_failure(engine: SnapshotEngine, source_dir: Path):
     nested = source_dir / "nested"
     nested.mkdir()

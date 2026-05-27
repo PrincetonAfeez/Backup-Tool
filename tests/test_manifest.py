@@ -330,6 +330,50 @@ def test_manifest_stats_consistency_errors_detect_mismatch():
     assert any("stats.entry_count" in error for error in errors)
 
 
+def test_file_entry_direct_construct_normalizes_hash_case():
+    lowercase = manifest_hash("payload")
+    uppercase = lowercase.upper()
+    entry = FileEntry(type="file", hash=uppercase, size=3)
+    assert entry.hash == lowercase
+
+
+def test_file_entry_direct_construct_normalizes_chunk_hashes():
+    chunk = manifest_hash("chunk")
+    entry = FileEntry(
+        type="file",
+        hash=manifest_hash("file"),
+        size=10,
+        chunks=(chunk.upper(),),
+    )
+    assert entry.chunks == (chunk,)
+
+
+def test_manifest_direct_construct_rejects_blank_source():
+    with pytest.raises(ManifestError, match="source must be a non-empty string"):
+        Manifest(
+            snapshot_id=TEST_SNAPSHOT_ID,
+            created_at=TEST_CREATED_AT,
+            source="   ",
+            status="complete",
+            stats={"entry_count": 0},
+            files={},
+        )
+
+
+def test_manifest_stats_consistency_errors_detect_errors_mismatch():
+    manifest = Manifest(
+        snapshot_id=TEST_SNAPSHOT_ID,
+        created_at=TEST_CREATED_AT,
+        source="src",
+        status="complete",
+        stats={"errors": 0, "skipped_files": 1},
+        files={},
+        skipped=[{"path": "a.txt", "reason": "skipped"}],
+    )
+    errors = manifest_stats_consistency_errors(manifest)
+    assert any("stats.errors" in error for error in errors)
+
+
 def test_manifest_rejects_non_string_source():
     with pytest.raises(ManifestError, match="source must be a non-empty string"):
         Manifest.from_dict(

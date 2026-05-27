@@ -170,6 +170,31 @@ def test_cli_show_stdout_is_valid_json_only(
     assert not stdout.getvalue().startswith("snapshot=")
 
 
+@symlink_required
+def test_force_restore_aborts_when_symlinks_fail_over_existing_destination(
+    engine: SnapshotEngine,
+    source_dir: Path,
+    tmp_path: Path,
+    monkeypatch,
+):
+    (source_dir / "keep.txt").write_text("keep", encoding="utf-8")
+    (source_dir / "link.txt").symlink_to("keep.txt")
+    manifest = engine.build_snapshot(source_dir, None).manifest
+    destination = tmp_path / "restore"
+    destination.mkdir()
+    (destination / "precious.txt").write_text("do not lose", encoding="utf-8")
+
+    def fail_symlink(*_args, **_kwargs):
+        raise OSError("symlink denied")
+
+    monkeypatch.setattr("backup_tool.snapshot_engine.os.symlink", fail_symlink)
+
+    with pytest.raises(RestoreError, match="refusing to replace existing destination"):
+        engine.restore_snapshot(manifest, destination, force=True)
+
+    assert (destination / "precious.txt").read_text(encoding="utf-8") == "do not lose"
+
+
 def test_stale_staging_cleanup_via_gc_and_check(
     repo: Repository,
     source_dir: Path,

@@ -151,7 +151,8 @@ def check_repository(repo: Repository, *, repair: bool = False) -> CheckResult:
             if removed_staging:
                 warnings.append(
                     f"Removed {len(removed_staging)} orphan staging "
-                    f"director{'y' if len(removed_staging) == 1 else 'ies'}"
+                    f"director{'y' if len(removed_staging) == 1 else 'ies'}; "
+                    f"bytes={staging_bytes}"
                 )
         else:
             warnings.append(

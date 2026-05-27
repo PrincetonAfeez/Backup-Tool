@@ -48,6 +48,8 @@ automatically. Use `backup --verbose` to see when a stale lock was removed.
 `info` prints repository metadata as JSON, then snapshot/object counts on stdout.
 `show` prints the manifest as JSON on stdout (same keys as `Manifest.to_dict()`);
 a one-line summary goes to stderr.
+`diff` reports content and path topology changes between snapshots; metadata-only
+changes (permissions, timestamps) are stored in manifests but not listed.
 
 ## Exit Codes
 
@@ -134,7 +136,9 @@ See [docs/adr/README.md](docs/adr/README.md) for design decisions. [ADR 0009](do
 - Restore writes into a fresh staging directory first, then atomically replaces
   the destination. Without `--force`, restore refuses when the destination already
   exists (file) or is non-empty (directory). With `--force`, the destination may
-  be replaced only after the staged restore completes successfully.
+  be replaced only after the staged restore completes successfully. If symlink
+  restoration fails while the destination already exists, restore aborts before
+  replacing it (exit code 1) instead of leaving a partial tree in place.
 - Manifests are never modified after commit; `prune` deletes old manifest files
   during retention.
 - `verify` detects missing blobs and hash mismatches (bit rot), not manifest
@@ -212,6 +216,9 @@ This tool is intended for small, local datasets in an academic setting:
 - Non-dry-run backups stage new blobs under `tmp/staging/<snapshot-id>/` during
   the scan and promote them to `objects/` only when the snapshot succeeds. Strict
   aborts and failed scans discard staging instead of leaving orphan blobs.
+- `check` cross-checks manifest entry/skip counts and `stats.errors` against
+  the `skipped` list, but not diff- or scan-derived stats (`new_files`,
+  `changed_files`, `new_bytes_stored`, and similar).
 
 Manifests committed before digest sidecars were added cannot be loaded until
 you run `backup-tool migrate manifest-digests --repo <path>` once.

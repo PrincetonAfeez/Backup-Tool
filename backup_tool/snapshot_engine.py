@@ -236,7 +236,7 @@ class SnapshotEngine:
         safe_symlinks: bool = False,
     ) -> RestoreResult:
         selected = self._select_restore_entries(snapshot, file_path)
-        if not selected:
+        if not selected and file_path is not None:
             raise RestoreError("No files matched restore request")
 
         self._check_destination(destination, force)
@@ -312,6 +312,11 @@ class SnapshotEngine:
             ):
                 target = safe_restore_path(temp_path, manifest_path)
                 restore_entry_metadata(target, entry, warnings)
+
+            if failed_symlinks and os.path.lexists(destination):
+                raise RestoreError(
+                    "Restore is partial; refusing to replace existing destination"
+                )
 
             if os.path.lexists(destination):
                 while True:
@@ -411,7 +416,7 @@ class SnapshotEngine:
                 failed_path = Path(failed)
                 try:
                     manifest_path = source_relative_path(source, failed_path)
-                except ValueError:
+                except ManifestError:
                     manifest_path = failed_path.name
             else:
                 manifest_path = "."

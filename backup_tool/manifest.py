@@ -33,6 +33,7 @@ DERIVED_MANIFEST_STAT_KEYS = frozenset(
         "directory_count",
         "symlink_count",
         "skipped_files",
+        "errors",
     }
 )
 
@@ -41,17 +42,24 @@ def derived_manifest_stats(manifest: "Manifest") -> dict[str, int]:
     """Recompute manifest stats that are fully determined by manifest contents."""
 
     files = manifest.files
+    skipped_count = len(manifest.skipped)
     return {
         "entry_count": len(files),
         "regular_file_count": sum(1 for entry in files.values() if entry.type == "file"),
         "directory_count": sum(1 for entry in files.values() if entry.type == "directory"),
         "symlink_count": sum(1 for entry in files.values() if entry.type == "symlink"),
-        "skipped_files": len(manifest.skipped),
+        "skipped_files": skipped_count,
+        "errors": skipped_count,
     }
 
 
 def manifest_stats_consistency_errors(manifest: "Manifest") -> list[str]:
-    """Return errors when stored stats disagree with derived counts."""
+    """Return errors when stored stats disagree with derived counts.
+
+    Diff- and scan-derived fields (``new_files``, ``changed_files``,
+    ``deleted_files``, ``unchanged_files``, ``new_bytes_stored``,
+    ``total_bytes_scanned``, ``new_blobs``) are not cross-checked.
+    """
 
     derived = derived_manifest_stats(manifest)
     errors: list[str] = []
@@ -157,6 +165,12 @@ def _reject_irrelevant_entry_values(entry: "FileEntry") -> None:
     _reject_irrelevant_entry_fields(entry.type, data)
 
 
+def _validate_manifest_source(source: Any) -> str:
+    if not isinstance(source, str) or not source.strip():
+        raise ManifestError("Manifest source must be a non-empty string")
+    return source
+
+
 def _validate_symlink_target(target: Any) -> str:
     if not isinstance(target, str):
         raise ManifestError("Symlink entry target must be a string")
@@ -184,6 +198,22 @@ class FileEntry:
 
     def __post_init__(self) -> None:
         self._validate()
+        self._normalize_hashes()
+
+    def _normalize_hashes(self) -> None:
+        if self.type != "file":
+            return
+        if self.hash:
+            object.__setattr__(self, "hash", _validate_content_hash(self.hash))
+        if self.chunks is not None:
+            object.__setattr__(
+                self,
+                "chunks",
+                tuple(
+                    _validate_content_hash(chunk_hash, field=f"chunks[{index}]")
+                    for index, chunk_hash in enumerate(self.chunks)
+                ),
+            )
 
     def _validate(self) -> None:
         if self.type not in FILE_ENTRY_TYPES:
@@ -305,6 +335,7 @@ class Manifest:
             raise ManifestError(f"Unsupported manifest version: {self.version}")
         validate_snapshot_id(self.snapshot_id)
         validate_created_at(self.created_at)
+        object.__setattr__(self, "source", _validate_manifest_source(self.source))
         if self.hash_algorithm != MANIFEST_HASH_ALGORITHM:
             raise ManifestError(f"Unsupported manifest hash algorithm: {self.hash_algorithm}")
         if self.status not in MANIFEST_STATUSES:
@@ -340,9 +371,7 @@ class Manifest:
         skipped = validate_skipped_items(data.get("skipped", []))
         snapshot_id = validate_snapshot_id(str(data["snapshot_id"]))
         created_at = validate_created_at(str(data["created_at"]))
-        source = data.get("source")
-        if not isinstance(source, str) or not source.strip():
-            raise ManifestError("Manifest source must be a non-empty string")
+        source = _validate_manifest_source(data.get("source"))
 
         files: dict[str, FileEntry] = {}
         for raw_path, raw_entry in files_data.items():

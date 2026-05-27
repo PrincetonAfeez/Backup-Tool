@@ -43,6 +43,24 @@ def test_build_snapshot_empty_directory(engine: SnapshotEngine, source_dir: Path
     assert result.status == "complete"
 
 
+def test_restore_empty_snapshot_creates_empty_destination(
+    engine: SnapshotEngine,
+    source_dir: Path,
+    tmp_path: Path,
+):
+    manifest = engine.build_snapshot(source_dir, None).manifest
+    assert manifest is not None
+    assert len(manifest.files) == 0
+
+    destination = tmp_path / "restore"
+    result = engine.restore_snapshot(manifest, destination)
+
+    assert result.restored_files == 0
+    assert result.restored_directories == 0
+    assert destination.is_dir()
+    assert not any(destination.iterdir())
+
+
 def test_build_snapshot_respects_excludes(engine: SnapshotEngine, source_dir: Path):
     (source_dir / "keep.txt").write_text("keep", encoding="utf-8")
     (source_dir / "skip.tmp").write_text("skip", encoding="utf-8")
