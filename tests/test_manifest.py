@@ -5,7 +5,13 @@ from pathlib import Path
 import pytest
 
 from backup_tool.errors import ManifestError
-from backup_tool.manifest import FileEntry, Manifest, ManifestStore, write_manifest_digest
+from backup_tool.manifest import (
+    FileEntry,
+    Manifest,
+    ManifestStore,
+    manifest_stats_consistency_errors,
+    write_manifest_digest,
+)
 from tests.conftest import (
     MISSING_SNAPSHOT_ID,
     TEST_CREATED_AT,
@@ -34,7 +40,7 @@ def test_file_entry_round_trip_whole_file():
     entry = FileEntry(type="file", hash=file_hash, size=3, mtime=1.0, mode=0o644)
     loaded = FileEntry.from_dict(entry.to_dict())
     assert loaded == entry
-    assert loaded.identity() == ("file", file_hash, None, 0o644, 1.0)
+    assert loaded.identity() == ("file", file_hash, None, 3)
 
 
 def test_file_entry_round_trip_chunked():
@@ -44,19 +50,19 @@ def test_file_entry_round_trip_chunked():
     entry = FileEntry(type="file", hash=file_hash, size=10, chunks=(chunk_a, chunk_b))
     loaded = FileEntry.from_dict(entry.to_dict())
     assert loaded.chunks == (chunk_a, chunk_b)
-    assert loaded.identity() == ("file", file_hash, (chunk_a, chunk_b), None, None)
+    assert loaded.identity() == ("file", file_hash, (chunk_a, chunk_b), 10)
 
 
 def test_file_entry_symlink_round_trip():
     entry = FileEntry(type="symlink", target="dest.txt", mode=0o777, is_dir_symlink=False)
     loaded = FileEntry.from_dict(entry.to_dict())
-    assert loaded.identity() == ("symlink", "dest.txt", 0o777, False)
+    assert loaded.identity() == ("symlink", "dest.txt")
 
 
 def test_file_entry_directory_round_trip():
     entry = FileEntry(type="directory", mode=0o755)
     loaded = FileEntry.from_dict(entry.to_dict())
-    assert loaded.identity() == ("directory", 0o755, None)
+    assert loaded.identity() == ("directory",)
 
 
 def test_file_entry_direct_construct_rejects_invalid_type():
@@ -284,6 +290,59 @@ def test_manifest_rejects_invalid_created_at():
             status="complete",
             stats={"entry_count": 0},
             files={},
+        )
+
+
+def test_manifest_rejects_impossible_created_at_date():
+    with pytest.raises(ManifestError, match="Invalid manifest created_at"):
+        Manifest.from_dict(
+            {
+                "version": 1,
+                "snapshot_id": TEST_SNAPSHOT_ID,
+                "created_at": "2026-02-30T00:00:00.000000Z",
+                "source": "src",
+                "hash_algorithm": "sha256",
+                "status": "complete",
+                "stats": {"entry_count": 0},
+                "files": {},
+            }
+        )
+
+
+def test_manifest_stats_consistency_errors_detect_mismatch():
+    file_hash = manifest_hash("abc")
+    entry = FileEntry(type="file", hash=file_hash, size=3)
+    manifest = Manifest(
+        snapshot_id=TEST_SNAPSHOT_ID,
+        created_at=TEST_CREATED_AT,
+        source="src",
+        status="complete",
+        stats={
+            "entry_count": 99,
+            "regular_file_count": 1,
+            "directory_count": 0,
+            "symlink_count": 0,
+            "skipped_files": 0,
+        },
+        files={"a.txt": entry},
+    )
+    errors = manifest_stats_consistency_errors(manifest)
+    assert any("stats.entry_count" in error for error in errors)
+
+
+def test_manifest_rejects_non_string_source():
+    with pytest.raises(ManifestError, match="source must be a non-empty string"):
+        Manifest.from_dict(
+            {
+                "version": 1,
+                "snapshot_id": TEST_SNAPSHOT_ID,
+                "created_at": TEST_CREATED_AT,
+                "source": 123,
+                "hash_algorithm": "sha256",
+                "status": "complete",
+                "stats": {"entry_count": 0},
+                "files": {},
+            }
         )
 
 

@@ -26,6 +26,44 @@ MANIFEST_VERSION = 1
 MANIFEST_HASH_ALGORITHM = "sha256"
 MANIFEST_STATUSES = frozenset({"complete", "partial", "dry-run"})
 FILE_ENTRY_TYPES = frozenset({"file", "symlink", "directory"})
+DERIVED_MANIFEST_STAT_KEYS = frozenset(
+    {
+        "entry_count",
+        "regular_file_count",
+        "directory_count",
+        "symlink_count",
+        "skipped_files",
+    }
+)
+
+
+def derived_manifest_stats(manifest: "Manifest") -> dict[str, int]:
+    """Recompute manifest stats that are fully determined by manifest contents."""
+
+    files = manifest.files
+    return {
+        "entry_count": len(files),
+        "regular_file_count": sum(1 for entry in files.values() if entry.type == "file"),
+        "directory_count": sum(1 for entry in files.values() if entry.type == "directory"),
+        "symlink_count": sum(1 for entry in files.values() if entry.type == "symlink"),
+        "skipped_files": len(manifest.skipped),
+    }
+
+
+def manifest_stats_consistency_errors(manifest: "Manifest") -> list[str]:
+    """Return errors when stored stats disagree with derived counts."""
+
+    derived = derived_manifest_stats(manifest)
+    errors: list[str] = []
+    for key in DERIVED_MANIFEST_STAT_KEYS:
+        if key in manifest.stats and manifest.stats[key] != derived[key]:
+            errors.append(
+                f"{manifest.snapshot_id}: stats.{key} is {manifest.stats[key]} "
+                f"but manifest contains {derived[key]}"
+            )
+    return errors
+
+
 MAX_FILE_MODE = 0o7777
 
 IRRELEVANT_ENTRY_FIELDS: dict[str, frozenset[str]] = {
@@ -236,12 +274,17 @@ class FileEntry:
         return data
 
     def identity(self) -> tuple[Any, ...]:
+        """Content identity for diff classification (ADR 0002).
+
+        Metadata such as mode and mtime are excluded so a touched file with
+        unchanged bytes is not reported as changed.
+        """
         if self.type == "file":
-            return (self.type, self.hash, self.chunks, self.mode, self.mtime)
+            return (self.type, self.hash, self.chunks, self.size)
         if self.type == "symlink":
-            return (self.type, self.target, self.mode, self.is_dir_symlink)
+            return (self.type, self.target)
         if self.type == "directory":
-            return (self.type, self.mode, self.mtime)
+            return (self.type,)
         return (self.type,)
 
 
@@ -297,6 +340,9 @@ class Manifest:
         skipped = validate_skipped_items(data.get("skipped", []))
         snapshot_id = validate_snapshot_id(str(data["snapshot_id"]))
         created_at = validate_created_at(str(data["created_at"]))
+        source = data.get("source")
+        if not isinstance(source, str) or not source.strip():
+            raise ManifestError("Manifest source must be a non-empty string")
 
         files: dict[str, FileEntry] = {}
         for raw_path, raw_entry in files_data.items():
@@ -310,7 +356,7 @@ class Manifest:
         return cls(
             snapshot_id=snapshot_id,
             created_at=created_at,
-            source=str(data["source"]),
+            source=source,
             status=status,
             stats=stats,
             files=files,

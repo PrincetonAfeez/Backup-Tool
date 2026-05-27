@@ -256,37 +256,62 @@ class SnapshotEngine:
         old_path: Path | None = None
 
         try:
-            for manifest_path, entry in selected.items():
+            directory_entries = [
+                (path, entry) for path, entry in selected.items() if entry.type == "directory"
+            ]
+            file_entries = [
+                (path, entry) for path, entry in selected.items() if entry.type == "file"
+            ]
+            symlink_entries = [
+                (path, entry) for path, entry in selected.items() if entry.type == "symlink"
+            ]
+            other_types = {
+                entry.type
+                for entry in selected.values()
+                if entry.type not in {"directory", "file", "symlink"}
+            }
+            if other_types:
+                raise RestoreError(f"Unsupported entry type: {other_types.pop()}")
+
+            for manifest_path, entry in directory_entries:
+                target = safe_restore_path(temp_path, manifest_path)
+                target.mkdir(parents=True, exist_ok=True)
+                restored_directories += 1
+
+            for manifest_path, entry in file_entries:
                 target = safe_restore_path(temp_path, manifest_path)
                 target.parent.mkdir(parents=True, exist_ok=True)
+                if not entry.hash:
+                    raise RestoreError(f"File entry missing hash: {manifest_path}")
+                try:
+                    restore_file_content(self.object_store, entry, target)
+                except (HashError, StoreError) as exc:
+                    raise RestoreError(str(exc)) from exc
+                restore_entry_metadata(target, entry, warnings)
+                restored_files += 1
 
-                if entry.type == "file":
-                    if not entry.hash:
-                        raise RestoreError(f"File entry missing hash: {manifest_path}")
-                    try:
-                        restore_file_content(self.object_store, entry, target)
-                    except (HashError, StoreError) as exc:
-                        raise RestoreError(str(exc)) from exc
-                    restore_entry_metadata(target, entry, warnings)
-                    restored_files += 1
-                elif entry.type == "symlink":
-                    if entry.target is None:
-                        raise RestoreError(f"Symlink entry missing target: {manifest_path}")
-                    if safe_symlinks:
-                        assert_safe_symlink_target(entry.target, manifest_path=manifest_path)
-                    try:
-                        target_is_directory = bool(entry.is_dir_symlink) if os.name == "nt" else False
-                        os.symlink(entry.target, target, target_is_directory=target_is_directory)
-                        restored_symlinks += 1
-                    except OSError as exc:
-                        failed_symlinks += 1
-                        warnings.append(f"Could not restore symlink {manifest_path}: {exc}")
-                elif entry.type == "directory":
-                    target.mkdir(parents=True, exist_ok=True)
-                    restore_entry_metadata(target, entry, warnings)
-                    restored_directories += 1
-                else:
-                    raise RestoreError(f"Unsupported entry type: {entry.type}")
+            for manifest_path, entry in symlink_entries:
+                target = safe_restore_path(temp_path, manifest_path)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                if entry.target is None:
+                    raise RestoreError(f"Symlink entry missing target: {manifest_path}")
+                if safe_symlinks:
+                    assert_safe_symlink_target(entry.target, manifest_path=manifest_path)
+                try:
+                    target_is_directory = bool(entry.is_dir_symlink) if os.name == "nt" else False
+                    os.symlink(entry.target, target, target_is_directory=target_is_directory)
+                    restored_symlinks += 1
+                except OSError as exc:
+                    failed_symlinks += 1
+                    warnings.append(f"Could not restore symlink {manifest_path}: {exc}")
+
+            for manifest_path, entry in sorted(
+                directory_entries,
+                key=lambda item: item[0].count("/"),
+                reverse=True,
+            ):
+                target = safe_restore_path(temp_path, manifest_path)
+                restore_entry_metadata(target, entry, warnings)
 
             if os.path.lexists(destination):
                 while True:
@@ -306,7 +331,9 @@ class SnapshotEngine:
             raise
         finally:
             if old_path is not None and old_path.exists():
-                if old_path.is_dir():
+                if old_path.is_symlink():
+                    old_path.unlink(missing_ok=True)
+                elif old_path.is_dir():
                     shutil.rmtree(old_path, ignore_errors=True)
                 else:
                     old_path.unlink(missing_ok=True)
@@ -378,7 +405,26 @@ class SnapshotEngine:
         found: list[tuple[Path, str, str]] = []
         skipped: list[SkippedItem] = []
 
-        for root, dirnames, filenames in os.walk(source, topdown=True, followlinks=False):
+        def on_walk_error(exc: OSError) -> None:
+            failed = getattr(exc, "filename", None)
+            if failed:
+                failed_path = Path(failed)
+                try:
+                    manifest_path = source_relative_path(source, failed_path)
+                except ValueError:
+                    manifest_path = failed_path.name
+            else:
+                manifest_path = "."
+            skipped.append(
+                SkippedItem(manifest_path, f"could not scan directory: {exc}"),
+            )
+
+        for root, dirnames, filenames in os.walk(
+            source,
+            topdown=True,
+            followlinks=False,
+            onerror=on_walk_error,
+        ):
             root_path = Path(root)
 
             if root_path != source:
@@ -441,7 +487,8 @@ class SnapshotEngine:
                 return True
             if "/" not in normalized and fnmatch.fnmatch(name, normalized):
                 return True
-            if manifest_path.startswith(normalized.rstrip("/") + "/"):
+            base = normalized.rstrip("/")
+            if manifest_path == base or manifest_path.startswith(base + "/"):
                 return True
         return False
 

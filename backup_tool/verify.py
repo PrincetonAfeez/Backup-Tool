@@ -8,12 +8,13 @@ from typing import TYPE_CHECKING
 
 from backup_tool.chunking import file_blob_hashes, verify_file_entry
 from backup_tool.errors import IntegrityError, ManifestError, StoreError
-from backup_tool.manifest import MANIFEST_VERSION, Manifest
+from backup_tool.manifest import MANIFEST_VERSION, Manifest, manifest_stats_consistency_errors
 from backup_tool.repo_metadata import validate_repo_metadata
 from backup_tool.tmp_hygiene import (
+    iter_orphan_staging_dirs,
     iter_stale_lock_tmp_files,
     iter_stale_manifest_tmp_files,
-    remove_stale_paths,
+    remove_orphan_staging_dirs,
 )
 
 if TYPE_CHECKING:
@@ -90,6 +91,7 @@ def check_repository(repo: Repository, *, repair: bool = False) -> CheckResult:
             errors.append(str(exc))
             continue
         snapshot_count += 1
+        errors.extend(manifest_stats_consistency_errors(manifest))
         for manifest_path, entry in manifest.files.items():
             if entry.type == "file":
                 if not entry.hash:
@@ -130,6 +132,33 @@ def check_repository(repo: Repository, *, repair: bool = False) -> CheckResult:
     if stale_lock_tmp:
         warnings.append(f"{len(stale_lock_tmp)} stale lock tmp file(s) found")
 
+    known_snapshot_ids = {
+        path.stem
+        for path in repo.manifest_store.list_paths()
+        if path.suffix == ".json"
+    }
+    orphan_staging = iter_orphan_staging_dirs(
+        repo.tmp_dir,
+        known_snapshot_ids=known_snapshot_ids,
+    )
+    if orphan_staging:
+        if repair:
+            removed_staging, staging_bytes = remove_orphan_staging_dirs(
+                repo.tmp_dir,
+                known_snapshot_ids=known_snapshot_ids,
+                dry_run=False,
+            )
+            if removed_staging:
+                warnings.append(
+                    f"Removed {len(removed_staging)} orphan staging "
+                    f"director{'y' if len(removed_staging) == 1 else 'ies'}"
+                )
+        else:
+            warnings.append(
+                f"{len(orphan_staging)} orphan staging "
+                f"director{'y' if len(orphan_staging) == 1 else 'ies'} found"
+            )
+
     all_hashes = {hash_hex for hash_hex, _path in repo.object_store.iter_blob_paths()}
     orphaned = all_hashes - referenced
     if orphaned:
@@ -144,5 +173,5 @@ def check_repository(repo: Repository, *, repair: bool = False) -> CheckResult:
         referenced_object_count=len(referenced),
         orphan_object_count=len(orphaned),
         quarantined_malformed=quarantined_malformed,
-        repaired=bool(quarantined_malformed),
+        repaired=bool(quarantined_malformed or (repair and orphan_staging)),
     )

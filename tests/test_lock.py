@@ -110,6 +110,29 @@ def test_repository_lock_raises_when_active(tmp_path: Path):
         first.release()
 
 
+def test_repository_lock_retries_when_stale_lock_removed_by_peer(tmp_path: Path, monkeypatch):
+    lock_path = tmp_path / "lock"
+    lock_path.write_text("pid=0\ntime=0\n", encoding="utf-8")
+    real_open = os.open
+    phase = {"n": 0}
+
+    def selective_open(path, flags, mode=0o600):
+        if Path(path).resolve() != lock_path.resolve():
+            return real_open(path, flags, mode)
+        phase["n"] += 1
+        if phase["n"] == 1:
+            raise FileExistsError
+        if phase["n"] == 2:
+            lock_path.unlink(missing_ok=True)
+            raise FileExistsError
+        return real_open(path, flags, mode)
+
+    monkeypatch.setattr("backup_tool.lock.os.open", selective_open)
+    monkeypatch.setattr("backup_tool.lock.clear_stale_lock", lambda _path: None)
+    with RepositoryLock(lock_path):
+        assert lock_path.exists()
+
+
 def test_repository_lock_auto_clears_stale_pid(tmp_path: Path):
     lock_path = tmp_path / "lock"
     lock_path.write_text("pid=0\ntime=0\n", encoding="utf-8")

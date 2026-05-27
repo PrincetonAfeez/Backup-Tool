@@ -41,12 +41,13 @@ def test_classify_entries_treats_chunk_changes_as_changed():
     assert result.changed == ["big.bin"]
 
 
-def test_classify_entries_treats_mode_change_as_changed():
+def test_classify_entries_treats_mode_only_change_as_unchanged():
     shared_hash = manifest_hash("h")
     previous = {"a.txt": FileEntry(type="file", hash=shared_hash, size=1, mode=0o644)}
     current = {"a.txt": FileEntry(type="file", hash=shared_hash, size=1, mode=0o600)}
     result = classify_entries(current, previous)
-    assert result.changed == ["a.txt"]
+    assert result.unchanged == ["a.txt"]
+    assert result.changed == []
 
 
 def test_classify_entries_with_no_previous():
@@ -56,13 +57,13 @@ def test_classify_entries_with_no_previous():
     assert result.deleted == []
 
 
-def test_classify_entries_detects_mtime_only_change():
+def test_classify_entries_treats_mtime_only_change_as_unchanged():
     shared_hash = manifest_hash("h")
     previous = {"a.txt": FileEntry(type="file", hash=shared_hash, size=1, mtime=1.0)}
     current = {"a.txt": FileEntry(type="file", hash=shared_hash, size=1, mtime=2.0)}
     result = classify_entries(current, previous)
-    assert result.changed == ["a.txt"]
-    assert result.unchanged == []
+    assert result.unchanged == ["a.txt"]
+    assert result.changed == []
 
 
 def test_diff_manifests_compares_two_manifests():

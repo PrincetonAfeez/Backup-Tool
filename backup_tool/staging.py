@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import os
 import re
-import shutil
 from datetime import datetime
 from typing import Any
 
@@ -48,6 +46,10 @@ def validate_snapshot_id(snapshot_id: str) -> str:
 def validate_created_at(created_at: str) -> str:
     if not CREATED_AT_RE.fullmatch(created_at):
         raise ManifestError(f"Invalid manifest created_at: {created_at}")
+    try:
+        datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ManifestError(f"Invalid manifest created_at: {created_at}") from exc
     return created_at
 
 

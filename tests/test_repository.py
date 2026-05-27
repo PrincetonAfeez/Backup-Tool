@@ -30,7 +30,7 @@ def test_init_nonempty_directory_raises(tmp_path: Path):
     repo_path = tmp_path / "repo"
     repo_path.mkdir()
     (repo_path / "unrelated.txt").write_text("data", encoding="utf-8")
-    with pytest.raises(RepositoryError, match="not empty"):
+    with pytest.raises(RepositoryError, match="not empty.*--allow-nonempty"):
         Repository.init(repo_path)
 
 
@@ -160,6 +160,21 @@ def test_resolve_snapshot_latest_and_json_suffix(repo_with_snapshot: Repository)
 def test_resolve_snapshot_missing_raises(repo: Repository):
     with pytest.raises(RepositoryError, match="No snapshots found"):
         repo._resolve_snapshot("latest")
+
+
+def test_ensure_manifest_blobs_exist_rejects_corrupt_blob(
+    repo: Repository,
+    source_dir: Path,
+):
+    (source_dir / "a.txt").write_text("hello", encoding="utf-8")
+    repo.backup(source_dir)
+    manifest = repo.manifest_store.latest()
+    entry = manifest.files["a.txt"]
+    blob_hash = entry.chunks[0] if entry.chunks else entry.hash
+    repo.object_store.get_path(blob_hash).write_text("corrupt", encoding="utf-8")
+
+    with pytest.raises(RepositoryError, match="invalid blobs"):
+        repo._ensure_manifest_blobs_exist(manifest)
 
 
 def test_verify_detects_corrupt_blob(repo: Repository, source_dir: Path):

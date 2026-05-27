@@ -8,9 +8,11 @@ from backup_tool.errors import ManifestError, RestoreError
 
 
 def validate_exclude_pattern(pattern: str) -> str:
-    """Validate a backup exclude pattern without manifest path normalization."""
+    """Validate a backup exclude pattern and return a manifest-relative form."""
 
     normalized = pattern.replace("\\", "/")
+    while normalized.startswith("/"):
+        normalized = normalized[1:]
     if normalized in {"", "."}:
         raise ManifestError("Exclude pattern cannot be empty")
     if ".." in PurePosixPath(normalized).parts:

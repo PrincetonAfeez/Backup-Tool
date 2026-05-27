@@ -168,7 +168,7 @@ def test_cli_gc_dry_run(repo: Repository, repo_path: Path):
     assert repo.object_store.exists(orphan.hash_hex)
 
 
-def test_cli_dry_run_backup_with_skipped_returns_zero(monkeypatch, repo_path: Path, source_dir: Path):
+def test_cli_dry_run_backup_with_skipped_returns_three(monkeypatch, repo_path: Path, source_dir: Path):
     (source_dir / "keep.txt").write_text("keep", encoding="utf-8")
     (source_dir / "skip-me.txt").write_text("skip", encoding="utf-8")
     main(["init", "--repo", str(repo_path)])
@@ -180,7 +180,7 @@ def test_cli_dry_run_backup_with_skipped_returns_zero(monkeypatch, repo_path: Pa
         return original(self, source, skip_predicate=skip_predicate, **kwargs)
 
     monkeypatch.setattr(Repository, "backup", backup_with_skip)
-    assert main(["backup", str(source_dir), "--repo", str(repo_path), "--dry-run"]) == 0
+    assert main(["backup", str(source_dir), "--repo", str(repo_path), "--dry-run"]) == 3
 
 
 def test_print_helpers(capsys):
@@ -228,6 +228,14 @@ def test_cli_repository_error_exit_code(repo_path: Path):
     with redirect_stderr(stderr):
         code = main(["backup", str(repo_path), "--repo", str(repo_path)])
     assert code == 1
+
+
+def test_cli_info_counts_on_stdout(repo: Repository, repo_path: Path):
+    stdout = io.StringIO()
+    with redirect_stdout(stdout):
+        assert main(["info", "--repo", str(repo_path)]) == 0
+    lines = stdout.getvalue().splitlines()
+    assert lines[-1].startswith("snapshots=")
 
 
 def test_cli_internal_error_exit_code(repo: Repository, source_dir: Path, repo_path: Path):

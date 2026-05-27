@@ -189,7 +189,7 @@ def main(argv: list[str] | None = None) -> int:
                 _print_diff(backup_result.diff, show_unchanged=True)
                 for skipped_item in backup_result.skipped:
                     print(f"skipped: {skipped_item.path}: {skipped_item.reason}")
-            return 3 if backup_result.skipped and not backup_result.dry_run else 0
+            return 3 if backup_result.skipped else 0
 
         if args.command == "list":
             summaries = repo.list_snapshots()
@@ -217,7 +217,6 @@ def main(argv: list[str] | None = None) -> int:
             print(
                 f"snapshots={info.snapshot_count} objects={info.object_count} "
                 f"last_backup={last}",
-                file=sys.stderr,
             )
             return 0
 
@@ -225,7 +224,8 @@ def main(argv: list[str] | None = None) -> int:
             manifest = repo.show_snapshot(args.snapshot)
             print(
                 f"snapshot={manifest.snapshot_id} status={manifest.status} "
-                f"files={len(manifest.files)} skipped={len(manifest.skipped)}"
+                f"files={len(manifest.files)} skipped={len(manifest.skipped)}",
+                file=sys.stderr,
             )
             print(json.dumps(manifest.to_dict(), indent=2, sort_keys=True))
             return 0
@@ -239,9 +239,14 @@ def main(argv: list[str] | None = None) -> int:
                 safe_symlinks=args.safe_symlinks,
                 break_lock=args.break_lock,
             )
+            dir_label = (
+                "directory"
+                if restore_result.restored_directories == 1
+                else "directories"
+            )
             print(
                 f"Restored {restore_result.restored_files} file(s), "
-                f"{restore_result.restored_directories} director(ies), and "
+                f"{restore_result.restored_directories} {dir_label}, and "
                 f"{restore_result.restored_symlinks} symlink(s) to {restore_result.destination}"
             )
             for warning in restore_result.warnings:

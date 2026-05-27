@@ -29,7 +29,7 @@ def engine(tmp_path: Path) -> SnapshotEngine:
 
 
 def test_validate_exclude_pattern_allows_absolute_style():
-    assert validate_exclude_pattern("/etc") == "/etc"
+    assert validate_exclude_pattern("/etc") == "etc"
     assert validate_exclude_pattern("*.tmp") == "*.tmp"
 
 
@@ -60,13 +60,13 @@ def test_init_existing_file_raises_repository_error(tmp_path: Path):
         Repository.init(blocker / "repo")
 
 
-def test_classify_entries_detects_mode_only_change():
+def test_classify_entries_treats_mode_only_change_as_unchanged():
     shared_hash = manifest_hash("h")
     previous = {"a.txt": FileEntry(type="file", hash=shared_hash, size=1, mode=0o644)}
     current = {"a.txt": FileEntry(type="file", hash=shared_hash, size=1, mode=0o600)}
     result = classify_entries(current, previous)
-    assert result.changed == ["a.txt"]
-    assert result.unchanged == []
+    assert result.unchanged == ["a.txt"]
+    assert result.changed == []
 
 
 def test_build_snapshot_records_empty_directory(engine: SnapshotEngine, source_dir: Path):
@@ -383,3 +383,28 @@ def test_restore_force_rollback_after_final_replace_failure(
         engine.restore_snapshot(manifest, destination, force=True)
 
     assert (destination / "precious.txt").read_text(encoding="utf-8") == "keep me"
+
+
+def test_walk_source_records_scan_failure(engine: SnapshotEngine, source_dir: Path):
+    nested = source_dir / "nested"
+    nested.mkdir()
+    (nested / "file.txt").write_text("inside", encoding="utf-8")
+    real_walk = os.walk
+
+    def walk_with_scan_failure(top, *args, **kwargs):
+        onerror = kwargs.pop("onerror", None)
+        for root, dirnames, filenames in real_walk(top, *args, onerror=onerror, **kwargs):
+            if Path(root) == source_dir and onerror is not None:
+                exc = OSError(13, "Permission denied", str(nested))
+                onerror(exc)
+                dirnames.clear()
+            yield root, dirnames, filenames
+
+    with patch("backup_tool.snapshot_engine.os.walk", walk_with_scan_failure):
+        result = engine.build_snapshot(source_dir, None)
+
+    assert "nested/file.txt" not in result.manifest.files
+    assert any(
+        item.path == "nested" and "could not scan directory" in item.reason
+        for item in result.skipped
+    )

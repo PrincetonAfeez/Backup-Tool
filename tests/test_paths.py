@@ -79,7 +79,7 @@ def test_validate_exclude_pattern_rejects_unsafe(pattern: str):
 
 def test_validate_exclude_pattern_accepts_safe_patterns():
     assert validate_exclude_pattern("*.tmp") == "*.tmp"
-    assert validate_exclude_pattern("/etc") == "/etc"
+    assert validate_exclude_pattern("/etc") == "etc"
 
 
 @pytest.mark.parametrize(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import json
 import os
 import time
 from contextlib import redirect_stderr
@@ -14,7 +15,7 @@ import pytest
 from backup_tool.chunking import verify_file_entry
 from backup_tool.cli import main
 from backup_tool.errors import IntegrityError
-from backup_tool.manifest import FileEntry
+from backup_tool.manifest import FileEntry, write_manifest_digest
 from backup_tool.object_store import DEFAULT_TMP_MAX_AGE_SECONDS, ObjectStore
 from backup_tool.repository import Repository
 from tests.conftest import manifest_hash
@@ -54,6 +55,48 @@ def test_check_warns_about_stale_tmp(repo: Repository, monkeypatch):
     result = repo.check()
     assert any("stale blob tmp file" in warning for warning in result.warnings)
     assert stale.exists()
+
+
+def test_gc_aggressive_removes_orphan_staging_dir(repo: Repository, source_dir: Path):
+    repo.backup(source_dir)
+    orphan = repo.object_store.staging_root("2026-01-01T00-00-00-000000Z_deadbeef")
+    orphan.mkdir(parents=True)
+    (orphan / "aa").mkdir(parents=True)
+    (orphan / "aa" / "blob").write_bytes(b"staged")
+    old = time.time() - DEFAULT_TMP_MAX_AGE_SECONDS - 60
+    os.utime(orphan, (old, old))
+
+    result = repo.gc(aggressive=True)
+    assert not orphan.exists()
+    assert str(orphan) in result.removed_tmp_files
+
+
+def test_check_reports_inconsistent_manifest_stats(repo: Repository, source_dir: Path):
+    (source_dir / "a.txt").write_text("hello", encoding="utf-8")
+    repo.backup(source_dir)
+    manifest = repo.manifest_store.latest()
+    path = repo.manifest_store.path_for(manifest.snapshot_id)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["stats"]["entry_count"] = data["stats"]["entry_count"] + 1
+    path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    write_manifest_digest(path)
+
+    result = repo.check()
+    assert result.ok is False
+    assert any("stats.entry_count" in error for error in result.errors)
+
+
+def test_check_repair_removes_orphan_staging_dir(repo: Repository, source_dir: Path):
+    repo.backup(source_dir)
+    orphan = repo.object_store.staging_root("2026-01-01T00-00-00-000000Z_deadbeef")
+    orphan.mkdir(parents=True)
+    old = time.time() - DEFAULT_TMP_MAX_AGE_SECONDS - 60
+    os.utime(orphan, (old, old))
+
+    result = repo.check(repair=True)
+    assert not orphan.exists()
+    assert result.repaired is True
+    assert any("orphan staging" in warning for warning in result.warnings)
 
 
 def test_gc_aggressive_removes_stale_manifest_and_lock_tmp(repo: Repository):

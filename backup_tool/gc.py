@@ -10,6 +10,7 @@ from backup_tool.manifest import Manifest
 from backup_tool.tmp_hygiene import (
     iter_stale_lock_tmp_files,
     iter_stale_manifest_tmp_files,
+    remove_orphan_staging_dirs,
     remove_stale_paths,
 )
 
@@ -59,6 +60,18 @@ def gc_unlocked(
 
     referenced: set[str] = set()
     source_manifests = manifests if manifests is not None else repo.manifest_store.list_manifests()
+    known_snapshot_ids = {
+        manifest.snapshot_id for manifest in repo.manifest_store.list_manifests()
+    }
+    if aggressive:
+        removed_staging, staging_bytes = remove_orphan_staging_dirs(
+            repo.tmp_dir,
+            known_snapshot_ids=known_snapshot_ids,
+            dry_run=dry_run,
+        )
+        removed_tmp = [*removed_tmp, *removed_staging]
+        tmp_bytes_deleted += staging_bytes
+
     for manifest in source_manifests:
         for entry in manifest.files.values():
             if entry.type == "file":

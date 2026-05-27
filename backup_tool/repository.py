@@ -7,9 +7,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from backup_tool.atomic import atomic_write_json, fsync_directory
-from backup_tool.chunking import file_blob_hashes
+from backup_tool.chunking import verify_file_entry
 from backup_tool.diff import DiffResult, diff_manifests
-from backup_tool.errors import ManifestError, RepositoryError
+from backup_tool.errors import IntegrityError, ManifestError, RepositoryError, StoreError
 from backup_tool.gc import GCResult, gc_unlocked
 from backup_tool.lock import RepositoryLock
 from backup_tool.manifest import Manifest, ManifestStore, MigrateDigestResult
@@ -81,7 +81,7 @@ class Repository:
             if existing and not allow_nonempty:
                 raise RepositoryError(
                     f"Directory is not empty: {repo.path} "
-                    "(pass allow_nonempty=True to initialize anyway)"
+                    "(pass --allow-nonempty to initialize anyway)"
                 )
         else:
             try:
@@ -139,9 +139,7 @@ class Repository:
                         created_at=manifest.created_at,
                         source=manifest.source,
                         status=manifest.status,
-                        entry_count=int(
-                            manifest.stats.get("entry_count", len(manifest.files))
-                        ),
+                        entry_count=len(manifest.files),
                         new_bytes_stored=int(manifest.stats.get("new_bytes_stored", 0)),
                     )
                 )
@@ -299,15 +297,20 @@ class Repository:
             raise RepositoryError(f"Repository is missing required directories: {self.path}")
 
     def _ensure_manifest_blobs_exist(self, manifest: Manifest) -> None:
-        missing: list[str] = []
+        failures: list[str] = []
         for path, entry in manifest.files.items():
             if entry.type != "file":
                 continue
-            for blob_hash in file_blob_hashes(entry):
-                if not self.object_store.exists(blob_hash):
-                    missing.append(f"{path}:{blob_hash}")
-        if missing:
-            raise RepositoryError("Manifest references missing blobs: " + ", ".join(missing))
+            try:
+                verify_file_entry(self.object_store, entry)
+            except IntegrityError as exc:
+                failures.append(f"{path}: {exc}")
+            except StoreError as exc:
+                failures.append(f"{path}: {exc}")
+        if failures:
+            raise RepositoryError(
+                "Manifest references invalid blobs: " + ", ".join(failures)
+            )
 
     def _with_repo_self_exclude(self, source: Path, excludes: list[str]) -> tuple[list[str], list[str]]:
         """Auto-exclude the repository directory when it lives inside the source tree.

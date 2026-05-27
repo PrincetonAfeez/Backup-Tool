@@ -128,12 +128,16 @@ class RepositoryLock:
             cleared_pid = clear_stale_lock(self.path)
             if cleared_pid is not None:
                 self.cleared_stale_pid = cleared_pid
-                try:
-                    self._fd = os.open(self.path, flags)
-                except FileExistsError as exc:
-                    raise LockError(f"Repository is locked: {self.path}") from exc
-            else:
-                raise LockError(f"Repository is locked: {self.path}") from first_exc
+            try:
+                self._fd = os.open(self.path, flags)
+            except FileExistsError:
+                if not self.path.exists():
+                    try:
+                        self._fd = os.open(self.path, flags)
+                    except FileExistsError as exc:
+                        raise LockError(f"Repository is locked: {self.path}") from exc
+                else:
+                    raise LockError(f"Repository is locked: {self.path}") from first_exc
 
         self._token = token_hex(16)
         payload = f"pid={os.getpid()}\ntime={time.time()}\ntoken={self._token}\n"

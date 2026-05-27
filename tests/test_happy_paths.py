@@ -38,14 +38,15 @@ def test_strict_abort_gc_reclaims_all_scanned_blobs(repo: Repository, source_dir
 
 @pytest.mark.skipif(os.name == "nt", reason="Unix file modes are not portable on Windows")
 def test_mode_only_change_between_backups(repo: Repository, source_dir: Path):
-    """U-Test-12: permission-only changes appear in diff.changed."""
+    """U-Test-12: permission-only changes are unchanged in diff (ADR 0002)."""
     path = source_dir / "same.txt"
     path.write_text("same", encoding="utf-8")
     repo.backup(source_dir)
     os.chmod(path, stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
     second = repo.backup(source_dir)
     assert second.diff is not None
-    assert "same.txt" in second.diff.changed
+    assert "same.txt" in second.diff.unchanged
+    assert "same.txt" not in second.diff.changed
 
 
 def test_empty_directory_backed_up_and_restored(engine, source_dir: Path, tmp_path: Path):

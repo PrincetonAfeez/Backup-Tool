@@ -130,6 +130,16 @@ def test_is_excluded_directory_prefix(engine: SnapshotEngine):
     assert engine._is_excluded("other/data.txt", ["repo"]) is False
 
 
+def test_is_excluded_trailing_slash_excludes_directory(engine: SnapshotEngine):
+    assert engine._is_excluded("build", ["build/"]) is True
+    assert engine._is_excluded("build/file.txt", ["build/"]) is True
+
+
+def test_is_excluded_absolute_style_pattern(engine: SnapshotEngine):
+    assert engine._is_excluded("etc/hosts", ["/etc"]) is True
+    assert engine._is_excluded("var/log", ["/etc"]) is False
+
+
 def test_is_excluded_path_pattern_does_not_match_basename_only(engine: SnapshotEngine, source_dir: Path):
     nested = source_dir / "tests"
     nested.mkdir()

@@ -45,8 +45,9 @@ automatically. Use `backup --verbose` to see when a stale lock was removed.
 `list` marks the newest snapshot with `*` and highlights partial snapshots with
 `[PARTIAL]`.
 
-`info` prints repository metadata and object counts. `show` prints a snapshot
-manifest as JSON (same keys as `Manifest.to_dict()`).
+`info` prints repository metadata as JSON, then snapshot/object counts on stdout.
+`show` prints the manifest as JSON on stdout (same keys as `Manifest.to_dict()`);
+a one-line summary goes to stderr.
 
 ## Exit Codes
 
@@ -167,8 +168,10 @@ use the `is_dir_symlink` flag recorded at backup time.
 | `dir/*.py` | Files directly under `dir/` whose names match `*.py` |
 
 Patterns with `..` are rejected at the CLI with `Unsafe exclude pattern`.
-Absolute-style patterns such as `/etc` are allowed and matched against the full
-manifest path.
+A leading `/` is optional and stripped (for example `/etc` and `etc` both match
+manifest paths under `etc/`). A trailing slash on a directory pattern (for
+example `build/`) also excludes the directory entry itself, not only paths under
+it.
 
 **Basename quirk:** patterns without `/` (for example `*.tmp`) also match on
 basename at any depth. Patterns with `/` (for example `tests/foo.py`) match only
