@@ -8,7 +8,7 @@
       "const": "fixed-1mb-blocks-above-threshold"
     },
     "created_at": {
-      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d{1,6})?Z$",
+      "description": "UTC timestamp written at init. Present on all repositories but not validated by check_repository (validate_repo_metadata).",
       "type": "string"
     },
     "hash_algorithm": {
@@ -26,7 +26,6 @@
   },
   "required": [
     "version",
-    "created_at",
     "hash_algorithm",
     "storage",
     "object_layout",

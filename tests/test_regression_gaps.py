@@ -19,7 +19,6 @@ from backup_tool.paths import manifest_path_matches_exclude_pattern
 from backup_tool.repository import Repository
 from backup_tool.snapshot_engine import SnapshotEngine
 from tests.conftest import (
-    TEST_CREATED_AT,
     TEST_SNAPSHOT_ID,
     manifest_hash,
     symlink_required,

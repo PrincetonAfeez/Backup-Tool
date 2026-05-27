@@ -21,3 +21,17 @@ def test_version_is_string():
 def test_public_exports():
     assert __all__ == ["Repository"]
     assert Repository is not None
+
+
+def test_resolve_version_unknown_when_both_sources_fail(monkeypatch):
+    import backup_tool
+
+    monkeypatch.setattr(
+        "importlib.metadata.version",
+        lambda _name: (_ for _ in ()).throw(Exception("missing")),
+    )
+    monkeypatch.setattr(
+        "tomllib.load",
+        lambda _handle: (_ for _ in ()).throw(KeyError("version")),
+    )
+    assert backup_tool._resolve_version() == "0.0.0+unknown"

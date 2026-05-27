@@ -138,6 +138,8 @@
       "type": "string"
     },
     "source": {
+      "description": "Non-empty backup source path string (matches runtime _validate_manifest_source).",
+      "minLength": 1,
       "type": "string"
     },
     "stats": {

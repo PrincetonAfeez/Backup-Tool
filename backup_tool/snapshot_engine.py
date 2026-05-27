@@ -258,7 +258,11 @@ class SnapshotEngine:
         if not selected and file_path is not None:
             raise RestoreError("No files matched restore request")
 
-        self._check_destination(destination, force)
+        merge_mode = file_path is not None
+        if merge_mode:
+            self._check_destination_merge(destination, force)
+        else:
+            self._check_destination(destination, force)
         destination.parent.mkdir(parents=True, exist_ok=True)
         temp_path = Path(
             tempfile.mkdtemp(
@@ -337,7 +341,11 @@ class SnapshotEngine:
                     "Restore is partial; refusing to replace existing destination"
                 )
 
-            if os.path.lexists(destination):
+            if merge_mode:
+                self._merge_restore_tree(temp_path, destination, selected)
+                shutil.rmtree(temp_path, ignore_errors=True)
+                temp_path = destination
+            elif os.path.lexists(destination):
                 while True:
                     old_path = destination.parent / (
                         f".restore-old-{snapshot.snapshot_id}-{token_hex(4)}"
@@ -345,8 +353,11 @@ class SnapshotEngine:
                     if not old_path.exists():
                         break
                 os.replace(destination, old_path)
-            os.replace(temp_path, destination)
-            temp_path = destination
+                os.replace(temp_path, destination)
+                temp_path = destination
+            else:
+                os.replace(temp_path, destination)
+                temp_path = destination
         except Exception:
             if temp_path.exists() and temp_path != destination:
                 shutil.rmtree(temp_path, ignore_errors=True)
@@ -558,3 +569,50 @@ class SnapshotEngine:
         if force:
             return
         raise RestoreError(f"Destination already exists: {destination}")
+
+    def _check_destination_merge(self, destination: Path, force: bool) -> None:
+        """Allow non-empty directories when restoring a selected path only."""
+
+        if not os.path.lexists(destination):
+            return
+
+        if destination.is_symlink():
+            if force:
+                return
+            raise RestoreError(f"Destination already exists: {destination}")
+
+        if destination.is_dir():
+            return
+
+        if force:
+            return
+        raise RestoreError(f"Destination already exists: {destination}")
+
+    def _merge_restore_tree(
+        self,
+        staging_root: Path,
+        destination: Path,
+        selected: dict[str, FileEntry],
+    ) -> None:
+        """Copy staged restore entries into an existing destination tree."""
+
+        destination.mkdir(parents=True, exist_ok=True)
+        for manifest_path in sorted(selected.keys(), key=lambda path: (path.count("/"), path)):
+            entry = selected[manifest_path]
+            source = safe_restore_path(staging_root, manifest_path)
+            target = safe_restore_path(destination, manifest_path)
+            if entry.type == "directory":
+                target.mkdir(parents=True, exist_ok=True)
+                if source.exists():
+                    shutil.copystat(source, target, follow_symlinks=False)
+            elif entry.type == "file":
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source, target)
+            elif entry.type == "symlink":
+                target.parent.mkdir(parents=True, exist_ok=True)
+                if target.exists() or target.is_symlink():
+                    target.unlink(missing_ok=True)
+                target_is_directory = bool(entry.is_dir_symlink) if os.name == "nt" else False
+                os.symlink(os.readlink(source), target, target_is_directory=target_is_directory)
+                if source.exists():
+                    shutil.copystat(source, target, follow_symlinks=False)

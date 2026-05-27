@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import json
+import shutil
 from dataclasses import dataclass, field
+from hashlib import sha256
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from backup_tool.chunking import file_blob_hashes, verify_file_entry
@@ -39,7 +42,19 @@ class CheckResult:
     referenced_object_count: int = 0
     orphan_object_count: int = 0
     quarantined_malformed: list[str] = field(default_factory=list)
+    quarantined_manifests: list[str] = field(default_factory=list)
     repaired: bool = False
+
+
+def _quarantine_manifest_path(repo: "Repository", path: Path) -> str:
+    """Move an unloadable snapshot manifest into ``tmp/quarantine/``."""
+
+    quarantine_dir = repo.tmp_dir / "quarantine"
+    quarantine_dir.mkdir(parents=True, exist_ok=True)
+    path_key = sha256(str(path).encode()).hexdigest()[:8]
+    destination = quarantine_dir / f"{path.stem}__{path_key}{path.suffix}"
+    shutil.move(str(path), str(destination))
+    return str(destination)
 
 
 def verify_manifest(repo: Repository, manifest: Manifest) -> VerifyResult:
@@ -76,6 +91,7 @@ def check_repository(repo: Repository, *, repair: bool = False) -> CheckResult:
     referenced: set[str] = set()
     snapshot_count = 0
     quarantined_malformed: list[str] = []
+    quarantined_manifests: list[str] = []
     orphaned: set[str] = set()
 
     try:
@@ -88,6 +104,11 @@ def check_repository(repo: Repository, *, repair: bool = False) -> CheckResult:
         try:
             manifest = repo.manifest_store.load_path(path)
         except ManifestError as exc:
+            if repair:
+                moved_to = _quarantine_manifest_path(repo, path)
+                quarantined_manifests.append(f"{path.name} -> {moved_to}")
+                warnings.append(f"Quarantined unloadable manifest: {path.name}")
+                continue
             errors.append(str(exc))
             continue
         snapshot_count += 1
@@ -194,8 +215,10 @@ def check_repository(repo: Repository, *, repair: bool = False) -> CheckResult:
         referenced_object_count=len(referenced),
         orphan_object_count=len(orphaned),
         quarantined_malformed=quarantined_malformed,
+        quarantined_manifests=quarantined_manifests,
         repaired=bool(
             quarantined_malformed
+            or quarantined_manifests
             or (repair and orphan_staging)
             or removed_digest_sidecars
         ),

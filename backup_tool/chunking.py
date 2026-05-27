@@ -121,6 +121,7 @@ def store_file(
     bytes_stored = 0
     actual_size = 0
     file_digest = sha256()
+    would_store: set[str] = set()
 
     try:
         with path.open("rb") as src:
@@ -134,9 +135,10 @@ def store_file(
                 chunks.append(chunk_hash)
 
                 if dry_run:
-                    if not store.has_valid_blob(chunk_hash):
+                    if chunk_hash not in would_store and not store.has_valid_blob(chunk_hash):
                         new_blob_count += 1
                         bytes_stored += len(data)
+                    would_store.add(chunk_hash)
                     continue
 
                 blob = store.put_bytes(data)

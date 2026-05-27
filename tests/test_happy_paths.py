@@ -7,7 +7,6 @@ import os
 import stat
 import time
 from contextlib import redirect_stderr
-from hashlib import sha256
 from pathlib import Path
 
 import pytest

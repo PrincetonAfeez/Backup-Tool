@@ -17,12 +17,15 @@ def _resolve_version() -> str:
     except Exception:
         pass
 
-    import tomllib
+    try:
+        import tomllib
 
-    pyproject = Path(__file__).resolve().parent.parent / "pyproject.toml"
-    with pyproject.open("rb") as handle:
-        data = tomllib.load(handle)
-    return str(data["project"]["version"])
+        pyproject = Path(__file__).resolve().parent.parent / "pyproject.toml"
+        with pyproject.open("rb") as handle:
+            data = tomllib.load(handle)
+        return str(data["project"]["version"])
+    except (OSError, KeyError, ValueError):
+        return "0.0.0+unknown"
 
 
 __version__ = _resolve_version()

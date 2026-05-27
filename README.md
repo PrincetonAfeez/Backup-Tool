@@ -37,7 +37,9 @@ After `pip install -e .`, use the `backup-tool` console script instead of `pytho
 | [docs/TDD.md](docs/TDD.md) | Technical design (flows, modules, types) |
 | [docs/RUNBOOK.md](docs/RUNBOOK.md) | Operations, health checks, recovery |
 | [docs/LESSONS_LEARNED.md](docs/LESSONS_LEARNED.md) | Trade-offs and future work |
+| [docs/IDS.md](docs/IDS.md) | Interface design (CLI contracts, I/O, side effects) |
 | [docs/adr/README.md](docs/adr/README.md) | Architecture decision records (0001–0012) |
+| [Schema/README.md](Schema/README.md) | JSON schemas aligned with runtime validation |
 | [docs/RELEASE.md](docs/RELEASE.md) | Version bump checklist |
 
 ## Commands
@@ -117,6 +119,19 @@ backup-tool prune --repo .mybackup --keep 5 --gc
   "hash_algorithm": "sha256",
   "snapshot_id": "2026-05-26T13-00-00-123456Z_abcd1234",
   "source": "C:\\Projects\\docs",
+  "skipped": [],
+  "stats": {
+    "changed_files": 0,
+    "directory_count": 0,
+    "entry_count": 2,
+    "errors": 0,
+    "new_bytes_stored": 12,
+    "new_files": 1,
+    "regular_file_count": 2,
+    "skipped_files": 0,
+    "symlink_count": 0,
+    "unchanged_files": 1
+  },
   "status": "complete",
   "version": 1
 }
@@ -148,6 +163,13 @@ Patterns match manifest-relative POSIX paths. Patterns with `..` are rejected.
 | `__pycache__` | That directory and descendants |
 | `build/` | Prefix `build/` (and the directory entry) |
 | `tests/foo.py` | Exact path only (no basename fallback) |
+| `/etc` | Same as `etc` (leading `/` is stripped) |
+| `<repo>` inside source | Auto-excluded when the repository lives under the backup source (warning emitted) |
+
+Patterns `*` and `**` are **rejected** at the CLI (they would exclude the entire tree).
+
+`restore --file` merges selected paths into an existing `--to` directory without removing
+unrelated files. A full restore (no `--file`) still atomically replaces `--to`.
 
 ## Development
 

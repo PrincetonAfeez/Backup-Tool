@@ -20,9 +20,11 @@ academic tool simple while preserving coherent repository views.
 
 ## Lock file durability
 
-Lock acquisition creates an exclusive placeholder, writes the full payload to a
-temporary file, fsyncs it, and atomically replaces the lock path. Failed writes
-remove the partial lock so stale-lock recovery does not stall on an empty file.
+Lock acquisition atomically creates the lock path with `O_CREAT | O_EXCL`,
+writes the PID/time/token payload directly to the new file descriptor, fsyncs
+the file and parent directory, and removes the partial lock if payload writing
+fails. Release deletes the lock only when the on-disk `token=` matches the
+acquirer's token.
 
 ## Trade-off
 

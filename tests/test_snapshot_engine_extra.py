@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from backup_tool.errors import ManifestError, RestoreError
-from backup_tool.manifest import FileEntry, Manifest
+from backup_tool.manifest import FileEntry
 from backup_tool.object_store import ObjectStore
 from backup_tool.snapshot_engine import SnapshotEngine
 

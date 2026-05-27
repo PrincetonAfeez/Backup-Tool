@@ -150,6 +150,25 @@ def test_check_repair_removes_orphan_manifest_digest_sidecar(
     assert any("Removed 1 orphan manifest digest sidecar" in warning for warning in result.warnings)
 
 
+def test_check_repair_quarantines_orphan_manifest_json(
+    repo: Repository,
+    source_dir: Path,
+):
+    (source_dir / "a.txt").write_text("hello", encoding="utf-8")
+    repo.backup(source_dir)
+    orphan = repo.snapshots_dir / "orphan.json"
+    orphan.write_text("{}", encoding="utf-8")
+
+    result = repo.check(repair=True)
+
+    assert result.ok is True
+    assert result.repaired is True
+    assert not orphan.exists()
+    assert len(result.quarantined_manifests) == 1
+    assert any("Quarantined unloadable manifest: orphan.json" in warning for warning in result.warnings)
+    assert repo.list_snapshots()
+
+
 def test_check_repair_help_describes_full_hygiene_actions():
     parser = build_parser()
     check_parser = parser._subparsers._group_actions[0].choices["check"]
@@ -157,6 +176,7 @@ def test_check_repair_help_describes_full_hygiene_actions():
     help_text = repair_action.help or ""
 
     assert "quarantine malformed object paths" in help_text
+    assert "unloadable snapshot manifests" in help_text
     assert "orphan manifest digest sidecar" in help_text
     assert "orphan staging" in help_text
 

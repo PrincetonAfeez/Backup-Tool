@@ -84,7 +84,10 @@ backup-tool restore latest --repo .mybackup --to restored
 backup-tool restore latest --repo .mybackup --to restored --file notes/todo.txt
 ```
 
-Use `--force` only when replacing an existing non-empty destination is intentional.
+Use `--force` when replacing an existing non-empty destination for a **full** restore (no
+`--file`). With `--file`, selected paths are **merged** into `--to`; unrelated files in
+the destination are preserved.
+
 Use `--safe-symlinks` for untrusted repositories.
 
 ### 6. Retention and space
@@ -165,13 +168,27 @@ backup-tool gc --repo PATH --aggressive   # if stale tmp reported
 backup-tool backup ...
 ```
 
-### Malformed object paths
+### Malformed object paths and hygiene repair
 
 ```powershell
 backup-tool check --repo PATH --repair
 ```
 
-Quarantine: `tmp/quarantine/`.
+`--repair` quarantines malformed object paths and unloadable snapshot manifests under
+`tmp/quarantine/`, removes orphan manifest digest sidecars, and removes orphan
+`tmp/staging/` directories. Orphan **blobs** still require `gc` (not deleted by `--repair`).
+Stale blob tmp files are reported as warnings; remove them with `gc --aggressive`.
+
+### Orphan snapshot manifest (no sidecar)
+
+A stray `snapshots/*.json` without a matching `.sha256` sidecar blocks listing and GC.
+Repair quarantines it:
+
+```powershell
+backup-tool check --repo PATH --repair
+```
+
+Inspect `tmp/quarantine/` if you need to recover the file manually.
 
 ---
 

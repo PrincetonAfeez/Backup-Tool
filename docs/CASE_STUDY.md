@@ -76,6 +76,7 @@ on-disk inspectability that made the project useful for teaching repository desi
 
 - [Documentation index](README.md)
 - [Technical design](TDD.md)
+- [Interface spec](IDS.md)
 - [Runbook](RUNBOOK.md)
 - [Lessons learned](LESSONS_LEARNED.md)
 - [ADR index](adr/README.md)

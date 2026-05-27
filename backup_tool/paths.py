@@ -18,6 +18,10 @@ def validate_exclude_pattern(pattern: object) -> str:
         normalized = normalized[1:]
     if normalized in {"", "."}:
         raise ManifestError("Exclude pattern cannot be empty")
+    if normalized in {"*", "**"}:
+        raise ManifestError(
+            "Exclude pattern cannot be '*' or '**' (matches entire tree; use a narrower pattern)"
+        )
     if ".." in PurePosixPath(normalized).parts:
         raise ManifestError(f"Unsafe exclude pattern: {pattern}")
     return normalized
@@ -43,6 +47,16 @@ def manifest_path_matches_exclude_pattern(manifest_path: str, pattern: str) -> b
         fnmatch.fnmatch(part, pattern_part)
         for part, pattern_part in zip(path_parts, pattern_parts, strict=True)
     )
+
+
+def validate_restore_file_path(value: str | None) -> str | None:
+    """Validate ``restore --file`` and return a manifest-relative path."""
+
+    if value is None:
+        return None
+    if value in {"", "."}:
+        raise RestoreError(f"Invalid --file value: {value!r}")
+    return normalize_manifest_path(value)
 
 
 def normalize_manifest_path(path: str | Path) -> str:
@@ -102,7 +116,12 @@ def is_safe_symlink_target(target: str) -> bool:
         return False
     if target.startswith("\\\\"):
         return False
-    if len(target) >= 2 and target[1] == ":":
+    if (
+        len(target) >= 2
+        and target[0].isalpha()
+        and target[1] == ":"
+        and (len(target) == 2 or target[2] in {"\\", "/"})
+    ):
         return False
     pure = PurePosixPath(target.replace("\\", "/"))
     if pure.is_absolute():

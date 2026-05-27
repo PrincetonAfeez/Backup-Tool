@@ -248,3 +248,33 @@ def test_cli_internal_error_exit_code(repo: Repository, source_dir: Path, repo_p
         with redirect_stderr(stderr):
             code = main(["backup", str(source_dir), "--repo", str(repo_path)])
     assert code == 4
+
+
+def test_cli_restore_invalid_file_value(repo: Repository, source_dir: Path, repo_path: Path, tmp_path: Path):
+    (source_dir / "a.txt").write_text("hello", encoding="utf-8")
+    main(["backup", str(source_dir), "--repo", str(repo_path)])
+    stderr = io.StringIO()
+    with redirect_stderr(stderr):
+        code = main(
+            [
+                "restore",
+                "latest",
+                "--repo",
+                str(repo_path),
+                "--to",
+                str(tmp_path / "restore"),
+                "--file",
+                "",
+            ]
+        )
+    assert code == 1
+    assert "Invalid --file value" in stderr.getvalue()
+
+
+def test_cli_backup_rejects_bare_exclude_wildcard(repo_path: Path, source_dir: Path):
+    main(["init", "--repo", str(repo_path)])
+    stderr = io.StringIO()
+    with redirect_stderr(stderr):
+        code = main(["backup", str(source_dir), "--repo", str(repo_path), "--exclude", "*"])
+    assert code == 1
+    assert "Exclude pattern cannot be" in stderr.getvalue()

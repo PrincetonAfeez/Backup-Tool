@@ -124,6 +124,24 @@ def test_restore_snapshot_single_file(engine: SnapshotEngine, source_dir: Path, 
     assert not (destination / "b.txt").exists()
 
 
+def test_restore_snapshot_single_file_merges_into_nonempty_destination(
+    engine: SnapshotEngine,
+    source_dir: Path,
+    tmp_path: Path,
+):
+    (source_dir / "a.txt").write_text("aaa", encoding="utf-8")
+    (source_dir / "b.txt").write_text("bbb", encoding="utf-8")
+    manifest = engine.build_snapshot(source_dir, None).manifest
+    destination = tmp_path / "restore"
+    destination.mkdir()
+    (destination / "precious.txt").write_text("keep me", encoding="utf-8")
+    result = engine.restore_snapshot(manifest, destination, file_path="a.txt", force=True)
+    assert result.restored_files == 1
+    assert (destination / "a.txt").read_text(encoding="utf-8") == "aaa"
+    assert (destination / "precious.txt").read_text(encoding="utf-8") == "keep me"
+    assert not (destination / "b.txt").exists()
+
+
 def test_restore_snapshot_no_matches_raises(engine: SnapshotEngine, source_dir: Path, tmp_path: Path):
     (source_dir / "a.txt").write_text("a", encoding="utf-8")
     manifest = engine.build_snapshot(source_dir, None).manifest

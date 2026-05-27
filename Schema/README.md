@@ -1,24 +1,40 @@
 # Backup Tool Schema Files
 
-This folder contains simple JSON Schema files for the academic Backup Tool project.
+JSON Schema (draft 2020-12) reference for Backup Tool Version 1. These schemas mirror
+**runtime validation** in `backup_tool` (load, `check`, and manifest parsing)—not a
+stricter superset.
 
 ## Files
 
-- `repo-metadata.schema.json` — validates `.mybackup/repo.json`.
-- `manifest.schema.json` — validates snapshot manifest JSON files.
-- `file-entry.schema.json` — validates a single manifest entry.
-- `snapshot-summary.schema.json` — validates simple snapshot summary objects.
-- `schema-index.json` — lists the schemas in this folder.
+| File | Validates |
+|------|-----------|
+| `repo-metadata.schema.json` | `repo.json` |
+| `manifest.schema.json` | Snapshot manifest JSON |
+| `file-entry.schema.json` | One manifest entry (also inlined in manifest schema) |
+| `snapshot-summary.schema.json` | List/info summary objects |
+| `schema-index.json` | Schema catalog |
 
-## Notes
+## Runtime alignment
 
-These schemas target Backup Tool Version 1 and mirror the current project format:
+| Field / rule | Schema | Runtime (`validate_repo_metadata`, `Manifest`) |
+|--------------|--------|------------------------------------------------|
+| `repo.json` required keys | `version`, `hash_algorithm`, `storage`, `object_layout`, `chunking` | Same fields enforced by `check` |
+| `repo.json` `created_at` | Optional property; type string | Written at `init`; **not** validated by `check` |
+| Manifest `source` | Non-empty string (`minLength: 1`) | Non-empty stripped string |
+| Manifest `stats`, `skipped` | Required | Always emitted by `Manifest.to_dict()` |
+| SHA-256 hashes | 64 lowercase hex | `object_store.validate_hash` |
+| Snapshot id | Pattern in schema | `staging.validate_snapshot_id` |
 
-- SHA-256 hashes are lowercase 64-character hex strings.
-- Snapshot IDs use the project format `YYYY-MM-DDTHH-MM-SS-microsecondsZ_<8 hex chars>`.
-- Manifest statuses are `complete`, `partial`, and `dry-run`.
-- File entries may be `file`, `symlink`, or `directory`.
-- Repository metadata uses `sha256`, `content-addressable`, `sha256-prefix-2`, and `fixed-1mb-blocks-above-threshold`.
+## Format notes
 
-These schemas are intentionally simple and academic. They are useful for documentation,
-validation experiments, and explaining the repository format.
+- Snapshot IDs: `YYYY-MM-DDTHH-MM-SS-microsecondsZ_<8 hex>`
+- Status: `complete`, `partial`, `dry-run`
+- Entry types: `file`, `symlink`, `directory`
+- Repository constants: `sha256`, `content-addressable`, `sha256-prefix-2`, `fixed-1mb-blocks-above-threshold`
+
+Use these schemas for documentation, portfolio review, and optional external validation.
+Command behavior is authoritative in [docs/IDS.md](../docs/IDS.md) and the implementation.
+
+**Packaging:** schemas ship with the source repository only. They are not included in the
+`backup-tool` wheel (`pyproject.toml` packages `backup_tool*` only). Editable installs and
+git checkouts include this directory.

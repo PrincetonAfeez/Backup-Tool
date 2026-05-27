@@ -12,6 +12,7 @@ from backup_tool.paths import (
     safe_restore_path,
     source_relative_path,
     validate_exclude_pattern,
+    validate_restore_file_path,
 )
 
 
@@ -82,6 +83,24 @@ def test_validate_exclude_pattern_accepts_safe_patterns():
     assert validate_exclude_pattern("/etc") == "etc"
 
 
+@pytest.mark.parametrize("pattern", ["*", "**"])
+def test_validate_exclude_pattern_rejects_bare_wildcards(pattern: str):
+    with pytest.raises(ManifestError, match="cannot be '\\*' or '\\*\\*'"):
+        validate_exclude_pattern(pattern)
+
+
+def test_validate_restore_file_path_rejects_empty_values():
+    with pytest.raises(RestoreError, match="Invalid --file value"):
+        validate_restore_file_path("")
+    with pytest.raises(RestoreError, match="Invalid --file value"):
+        validate_restore_file_path(".")
+
+
+def test_validate_restore_file_path_normalizes():
+    assert validate_restore_file_path("notes/todo.txt") == "notes/todo.txt"
+    assert validate_restore_file_path(None) is None
+
+
 def test_manifest_path_matches_exclude_pattern_is_path_aware():
     from backup_tool.paths import manifest_path_matches_exclude_pattern
 
@@ -94,6 +113,7 @@ def test_manifest_path_matches_exclude_pattern_is_path_aware():
     [
         ("relative/path", True),
         ("./local", True),
+        ("a:b", True),
         ("/etc/passwd", False),
         ("../outside", False),
         ("C:\\Windows\\System32", False),

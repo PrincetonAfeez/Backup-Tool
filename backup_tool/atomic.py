@@ -46,10 +46,8 @@ def atomic_write_text(path: Path, text: str, encoding: str = "utf-8") -> None:
         os.replace(temp_path, path)
         fsync_directory(path.parent)
     except Exception:
-        try:
-            temp_path.unlink(missing_ok=True)
-        finally:
-            raise
+        temp_path.unlink(missing_ok=True)
+        raise
 
 
 def atomic_write_json(path: Path, data: dict[str, Any]) -> None:

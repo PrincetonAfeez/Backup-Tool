@@ -6,18 +6,19 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from typing import NoReturn
 
 from backup_tool import __version__
 from backup_tool.diff import DiffResult
 from backup_tool.errors import BackupToolError, IntegrityError, LockError, ManifestError
-from backup_tool.paths import validate_exclude_pattern
+from backup_tool.paths import validate_exclude_pattern, validate_restore_file_path
 from backup_tool.repository import Repository
 
 
 class BackupToolArgumentParser(argparse.ArgumentParser):
     """Argument parser that maps usage errors to exit code 1."""
 
-    def error(self, message: str) -> None:
+    def error(self, message: str) -> NoReturn:
         self.print_usage(sys.stderr)
         self.exit(1, f"{self.prog}: error: {message}\n")
 
@@ -86,7 +87,8 @@ def build_parser() -> BackupToolArgumentParser:
         action="store_true",
         help=(
             "repair safe repository hygiene issues: quarantine malformed object paths, "
-            "remove orphan manifest digest sidecars, and remove stale orphan staging dirs"
+            "quarantine unloadable snapshot manifests, remove orphan manifest digest "
+            "sidecars, and remove stale orphan staging dirs"
         ),
     )
     _add_break_lock(check_parser)
@@ -186,7 +188,10 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"warning: {warning}", file=sys.stderr)
 
             if backup_result.dry_run:
-                print(f"Dry run: snapshot {manifest.snapshot_id} was not committed.")
+                print(
+                    f"Dry run: snapshot {manifest.snapshot_id} was not committed.",
+                    file=sys.stderr,
+                )
             else:
                 print(f"Snapshot {manifest.snapshot_id} committed.")
                 if manifest.status == "partial":
@@ -247,10 +252,11 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         if args.command == "restore":
+            restore_file = validate_restore_file_path(args.file)
             restore_result = repo.restore(
                 args.snapshot,
                 args.to,
-                file_path=args.file,
+                file_path=restore_file,
                 force=args.force,
                 safe_symlinks=args.safe_symlinks,
                 break_lock=args.break_lock,
@@ -300,6 +306,13 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"warning: {warning}", file=sys.stderr)
             for quarantined_item in check_result.quarantined_malformed:
                 print(f"quarantined: {quarantined_item}")
+            for quarantined_manifest in check_result.quarantined_manifests:
+                print(f"quarantined: {quarantined_manifest}")
+            if check_result.repaired and not check_result.ok:
+                print(
+                    "warning: repository partially repaired; unresolved errors remain.",
+                    file=sys.stderr,
+                )
             if check_result.orphan_object_count > 0:
                 print(
                     f"hint: run `backup-tool gc --repo {args.repo}` to remove unreferenced blobs.",

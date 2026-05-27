@@ -17,7 +17,11 @@ from backup_tool.repo_metadata import (
     default_repo_metadata,
 )
 from backup_tool.repository import Repository
+from tests.schema_validation import load_schema_file, validate_document
 
+
+REPO_METADATA_SCHEMA = load_schema_file("repo-metadata.schema.json")
+MANIFEST_SCHEMA = load_schema_file("manifest.schema.json")
 
 REPO_JSON_KEYS = frozenset(
     {
@@ -70,3 +74,21 @@ def test_repo_info_rejects_invalid_metadata(repo_path: Path):
     (repo_path / "repo.json").write_text("[1, 2, 3]", encoding="utf-8")
     with pytest.raises(RepositoryError, match="must be an object"):
         Repository(repo_path).repo_info()
+
+
+def test_written_repo_json_matches_schema(repo_path: Path):
+    Repository.init(repo_path)
+    metadata = json.loads((repo_path / "repo.json").read_text(encoding="utf-8"))
+    errors = validate_document(metadata, REPO_METADATA_SCHEMA)
+    assert errors == []
+
+
+def test_written_manifest_matches_schema(repo: Repository, source_dir: Path):
+    (source_dir / "a.txt").write_text("hello", encoding="utf-8")
+    (source_dir / "notes").mkdir()
+    (source_dir / "notes" / "todo.txt").write_text("todo", encoding="utf-8")
+    repo.backup(source_dir)
+    manifest_path = repo.manifest_store.path_for(repo.manifest_store.latest().snapshot_id)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    errors = validate_document(manifest, MANIFEST_SCHEMA)
+    assert errors == [], f"schema mismatches: {errors}"

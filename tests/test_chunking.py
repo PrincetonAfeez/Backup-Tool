@@ -64,6 +64,20 @@ def test_store_file_dry_run(store: ObjectStore, tmp_path: Path):
     assert store.iter_hashes() == []
 
 
+def test_store_file_dry_run_matches_live_for_repeated_chunks(store: ObjectStore, tmp_path: Path):
+    chunk = b"A" * CHUNKING_THRESHOLD
+    path = tmp_path / "large.bin"
+    path.write_bytes(chunk + chunk)
+
+    dry = store_file(store, path, dry_run=True)
+    live = store_file(store, path, dry_run=False)
+
+    assert dry.new_blob_count == live.new_blob_count
+    assert dry.bytes_stored == live.bytes_stored
+    assert dry.new_blob_count == 1
+    assert dry.bytes_stored == CHUNKING_THRESHOLD
+
+
 def test_store_file_stat_error(store: ObjectStore, tmp_path: Path):
     with pytest.raises(StoreError, match="Could not stat"):
         store_file(store, tmp_path / "missing.bin")

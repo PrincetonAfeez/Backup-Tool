@@ -8,10 +8,12 @@ snapshots. Use this index to navigate design notes, operations, and portfolio co
 | [README](../README.md) | Everyone | Install, commands, safety rules, limitations |
 | [ADR index](adr/README.md) | Contributors | Per-decision records (0001–0012) |
 | [Technical design (TDD)](TDD.md) | Implementers | Data flows, modules, types, concurrency |
+| [Interface spec (IDS)](IDS.md) | Integrators | CLI contracts, I/O, exit codes, side effects |
 | [Runbook](RUNBOOK.md) | Operators | SOPs, health checks, failure modes, recovery |
 | [Lessons learned](LESSONS_LEARNED.md) | Reviewers | Trade-offs, omissions, scaling, refactors |
 | [Case study](CASE_STUDY.md) | Portfolio | Concise narrative of design decisions |
 | [Release checklist](RELEASE.md) | Maintainers | Version bump and pre-tag checks |
+| [Schema](../Schema/README.md) | Reference | JSON schemas aligned with runtime validation |
 
 ## Architecture at a glance
 
@@ -38,4 +40,4 @@ not manifest authenticity (see [ADR 0009](adr/0009-manifest-trust-and-tamper-mod
 | Safety & ops | [0005](adr/0005-hashing-not-encryption.md), [0006](adr/0006-never-destructive-by-default.md), [0007](adr/0007-repository-locking.md), [0011](adr/0011-deferred-backup-transaction-staging.md) |
 | Code layout | [0010](adr/0010-module-layout.md) |
 
-Legacy monolithic course packet: [backup_tool_docs.md](../backup_tool_docs.md) (index only).
+Legacy monolithic course packet: [docs/legacy/DOCUMENTATION_INDEX.md](legacy/DOCUMENTATION_INDEX.md).

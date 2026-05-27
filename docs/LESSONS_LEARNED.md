@@ -97,4 +97,11 @@ Documented in [ADR 0012](adr/0012-scaling-and-incremental-scan-v2.md):
 
 The project ships broad pytest coverage (chunking, locks, symlinks, staging, prune+GC,
 CLI exit codes), 85% line coverage on `backup_tool`, ruff, mypy, and cross-platform CI.
+Optional `tests/test_static_checks.py` re-runs ruff and mypy when dev dependencies are
+installed. Schema JSON under `Schema/` is checked against real `repo.json` and manifest
+output via a tiny stdlib-only validator in `tests/schema_validation.py`.
 That investment matched the edge-case surface area more than the happy-path copy logic.
+
+**Version resolution at import.** `backup_tool.__version__` is resolved once per process
+via `importlib.metadata`, with a `pyproject.toml` fallback on the miss path. That cold
+import read is acceptable for a CLI that typically runs one command and exits.

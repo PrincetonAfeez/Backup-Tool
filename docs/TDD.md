@@ -74,16 +74,24 @@ discards staging and commits no manifest when any file is skipped.
 ```text
 restore SNAPSHOT --to DEST [--file PATH] [--force] [--safe-symlinks]
   → lock → load manifest
-  → stage under tmp → restore blobs/chunks, dirs, symlinks
+  → create .restore-<snapshot-id>.* temp dir beside destination.parent
+  → restore blobs/chunks, dirs, symlinks into staging dir
   → restore mtime/mode where possible
-  → atomic replace destination (refuse non-empty dest without --force)
+  → with --file: merge selected paths into --to (unrelated files preserved)
+  → without --file: atomically replace destination (refuse non-empty dest without --force)
 ```
+
+Restore staging lives next to the destination (`tempfile.mkdtemp(..., dir=destination.parent,
+prefix=".restore-<snapshot-id>.")`), not under the repository `tmp/` tree.
 
 ### Verify / check
 
 - **`verify`:** per-snapshot blob presence, chunk chain, composite file hash, size.
 - **`check`:** repo metadata, all manifests + sidecars, references, orphans, malformed
-  object paths, stale tmp; optional `--repair` quarantine.
+  object paths, stale tmp.
+- **`check --repair`:** quarantines malformed object paths, quarantines unloadable snapshot
+  manifests, removes orphan manifest digest sidecars, and removes orphan staging directories
+  under `tmp/staging/`. Stale blob tmp files require `gc --aggressive`.
 
 ### Retention
 
