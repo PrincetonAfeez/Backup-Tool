@@ -1,23 +1,42 @@
 # ADR 0011: Deferred Backup Transaction Staging
 
+## Status
+
+Accepted (implemented in Version 1).
+
 ## Decision
 
-Version 1 stores blobs in `objects/` as files are hashed during the scan.
-Strict mode aborts the manifest commit when any file is skipped, leaving orphan
-blobs until `gc` reclaims them.
+Non-dry-run backups write new blobs under `tmp/staging/<snapshot-id>/` during the scan.
+`ObjectStore.promote_staging()` moves only hashes referenced by the committed manifest
+into `objects/`. On strict abort, failed scan, or dry-run, staging is discarded.
 
 ## Reason
 
-Staging every new blob under `tmp/` and promoting to `objects/` only after a
-successful full scan is the architecturally clean contract (transactional
-backup). It adds complexity around promotion, crash recovery, and deduplication
-against already-committed objects.
+Direct writes to `objects/` during an in-progress backup leave orphan blobs when the
+manifest is never committed (strict mode, crash, or skipped files). Staging gives a
+two-phase commit: **stage → validate manifest → promote**, aligned with “snapshot commits
+only after referenced blobs exist.”
 
-## Version 2 direction
+## Behavior
 
-Consider a two-phase commit: stage in `tmp/staging/<snapshot-id>/`, promote on
-success, and sweep staging directories on abort or crash.
+- `begin_staging(snapshot_id)` at backup start
+- `put_file` / `put_bytes` target staging paths while staging is active
+- `promote_staging(referenced_hashes)` on successful commit
+- `discard_staging(snapshot_id)` on abort or after promotion cleanup
+- Aggressive `gc` and `check` can remove orphan staging dirs under `tmp/staging/`
 
-## Non-goals (Version 1)
+## Trade-offs
 
-Atomic multi-file backup transactions beyond manifest+blob existence ordering.
+- Extra disk use under `tmp/` during long backups
+- Promotion must skip blobs already present and valid in `objects/`
+- Crash mid-backup may leave a staging directory until GC or aggressive cleanup
+
+## Non-goals
+
+- Cross-repository transactions
+- Streaming promotion before the full referenced-hash set is known
+
+## Related
+
+- [ADR 0006](0006-never-destructive-by-default.md) — never destructive by default
+- [TDD](../TDD.md) — backup data flow

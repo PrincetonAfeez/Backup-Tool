@@ -2,13 +2,21 @@
 
 ![Tests](https://github.com/PrincetonAfeez/Backup-Tool/actions/workflows/tests.yml/badge.svg)
 
-A local Python backup tool that uses content-addressable storage and immutable
-JSON snapshot manifests to create incremental, verifiable snapshots.
+A local Python backup tool that uses **content-addressable storage** and **immutable JSON
+snapshot manifests** to create incremental, verifiable snapshots. The core package is
+standard-library only; the CLI delegates to the `Repository` library API.
 
-The core package is standard-library only. The CLI is intentionally thin and
-calls the library API. Licensed under [MIT](LICENSE).
+Licensed under [MIT](LICENSE).
 
-## Quick Start
+## Features
+
+- SHA-256 object store with whole-file and 1 MiB block chunk deduplication
+- Immutable manifests with digest sidecars; `verify`, `check`, `diff`
+- Staging-based backup and restore (no in-place manifest or destination mutation)
+- Repository lock with stale-lock recovery; documented exit codes
+- Retention (`prune`) and blob garbage collection (`gc`)
+
+## Quick start
 
 ```powershell
 python -m backup_tool.cli init --repo .mybackup
@@ -18,7 +26,19 @@ python -m backup_tool.cli verify latest --repo .mybackup
 python -m backup_tool.cli restore latest --repo .mybackup --to restored
 ```
 
-After installing the package, the same commands are available as `backup-tool`.
+After `pip install -e .`, use the `backup-tool` console script instead of `python -m backup_tool.cli`.
+
+## Documentation
+
+| Doc | Description |
+|-----|-------------|
+| [docs/README.md](docs/README.md) | Documentation hub |
+| [docs/CASE_STUDY.md](docs/CASE_STUDY.md) | Portfolio-style design narrative |
+| [docs/TDD.md](docs/TDD.md) | Technical design (flows, modules, types) |
+| [docs/RUNBOOK.md](docs/RUNBOOK.md) | Operations, health checks, recovery |
+| [docs/LESSONS_LEARNED.md](docs/LESSONS_LEARNED.md) | Trade-offs and future work |
+| [docs/adr/README.md](docs/adr/README.md) | Architecture decision records (0001–0012) |
+| [docs/RELEASE.md](docs/RELEASE.md) | Version bump checklist |
 
 ## Commands
 
@@ -38,56 +58,44 @@ backup-tool gc --repo <path> [--dry-run] [--aggressive] [--break-lock]
 backup-tool migrate manifest-digests --repo <path> [--break-lock]
 ```
 
-Mutating commands accept `--break-lock` to remove a lock file left behind by a
-crashed process. Locks whose recorded PID is no longer running, empty lock
-files, and malformed lock files older than 24 hours are cleared automatically.
-Recent malformed non-empty locks still require `--break-lock`. Use
-`backup --verbose` to see when a stale lock was removed.
+Mutating commands accept `--break-lock` when a crashed process left `lock` behind. Locks
+whose PID is no longer running, empty locks, and malformed locks older than 24 hours are
+cleared automatically; recent malformed non-empty locks still need `--break-lock`.
 
-`list` marks the newest snapshot with `*` and highlights partial snapshots with
-`[PARTIAL]`.
+`list` marks the newest snapshot with `*` and partial snapshots with `[PARTIAL]`.
 
-`info` prints repository metadata as JSON, then snapshot/object counts on stdout.
-`show` prints the manifest as JSON on stdout (same keys as `Manifest.to_dict()`);
-a one-line summary goes to stderr.
-`diff` reports content and path topology changes between snapshots; metadata-only
-changes (permissions, timestamps) are stored in manifests but not listed.
-
-## Exit Codes
+## Exit codes
 
 | Code | Meaning |
 |------|---------|
 | 0 | Success |
 | 1 | General error (invalid arguments, repository error) |
 | 2 | Integrity or verification failure (`verify`, `check`) |
-| 3 | Operation completed partially: backup skipped files, strict backup aborted, or restore skipped symlinks |
+| 3 | Partial backup, strict abort, or restore symlink skips |
 | 4 | Unexpected internal error |
 | 5 | Could not acquire repository lock |
 
-## Retention and Disk Usage
+## Retention and disk usage
 
-`prune` removes old snapshot manifests only. Unreferenced blobs remain on disk
-until garbage collection runs. Use `prune --gc` to prune manifests and reclaim
-blob storage in one step, or run `gc` separately after pruning.
+`prune` removes old snapshot manifests only. Unreferenced blobs remain until `gc`:
 
 ```powershell
 backup-tool prune --repo .mybackup --keep 5 --gc
-backup-tool prune --repo .mybackup --keep 5 --dry-run --gc
 ```
 
-When `prune` deletes snapshots without `--gc`, the CLI prints a hint to run
-`gc`. When `check` finds orphan blobs, it suggests the same.
+## Repository layout
 
-## Block Chunking
+```text
+.mybackup/
+    repo.json
+    lock
+    objects/<aa>/<full-sha256>
+    snapshots/<snapshot-id>.json
+    snapshots/<snapshot-id>.json.sha256
+    tmp/staging/<snapshot-id>/...
+```
 
-Files larger than 1 MiB are split into fixed-size content-addressed chunks.
-Smaller files remain stored as a single blob keyed by the file hash. Shared
-chunks deduplicate across files and snapshots (see ADR 0008).
-
-## Example Manifest
-
-Each snapshot is a JSON file under `snapshots/`. Once committed, a manifest is
-never modified in place; `prune` may delete old manifest files during retention.
+## Example manifest
 
 ```json
 {
@@ -99,11 +107,6 @@ never modified in place; `prune` may delete old manifest files during retention.
       "size": 12,
       "type": "file"
     },
-    "empty-dir": {
-      "mtime": 1710000000.0,
-      "mode": 493,
-      "type": "directory"
-    },
     "archive/large.bin": {
       "chunks": ["chunk_hash_1…", "chunk_hash_2…"],
       "hash": "full_file_hash…",
@@ -114,171 +117,57 @@ never modified in place; `prune` may delete old manifest files during retention.
   "hash_algorithm": "sha256",
   "snapshot_id": "2026-05-26T13-00-00-123456Z_abcd1234",
   "source": "C:\\Projects\\docs",
-  "skipped": [],
-  "stats": {
-    "changed_files": 0,
-    "directory_count": 1,
-    "entry_count": 3,
-    "new_bytes_stored": 12,
-    "new_files": 1,
-    "regular_file_count": 2,
-    "skipped_files": 0,
-    "symlink_count": 0,
-    "errors": 0
-  },
   "status": "complete",
   "version": 1
 }
 ```
 
-See [docs/adr/README.md](docs/adr/README.md) for design decisions. [ADR 0009](docs/adr/0009-manifest-trust-and-tamper-model.md) explains what `verify` does and does not prove.
+Large files (over 1 MiB) use fixed-size chunks ([ADR 0008](docs/adr/0008-fixed-size-block-chunking.md)).
+`verify` detects missing blobs and hash mismatches, not manifest tampering —
+[ADR 0009](docs/adr/0009-manifest-trust-and-tamper-model.md).
 
-## Safety Rules
+## Safety rules
 
 - Backup never mutates the source directory.
-- Restore refuses destinations that are the repository, inside the repository, or
-  a parent directory that contains the repository.
-- Restore writes into a fresh staging directory first, then atomically replaces
-  the destination. Without `--force`, restore refuses when the destination already
-  exists (file) or is non-empty (directory). With `--force`, the destination may
-  be replaced only after the staged restore completes successfully. If symlink
-  restoration fails while the destination already exists, restore aborts before
-  replacing it (exit code 1) instead of leaving a partial tree in place.
-- Manifests are never modified after commit; `prune` deletes old manifest files
-  during retention.
-- `verify` detects missing blobs and hash mismatches (bit rot), not manifest
-  tampering — see ADR 0009. Manifest digest sidecars catch accidental edits and
-  partial writes, not an attacker who can change both files.
-- A snapshot is committed only after referenced blobs exist.
-- Garbage collection deletes only blobs unreferenced by all surviving snapshots.
-- Manifest paths are normalized relative paths and are checked during restore.
-- Mutating repository operations use a lock file with stale-lock recovery.
-- Partial snapshots (skipped files) emit CLI warnings; use `--strict` to abort instead.
-- When the repository directory lives inside the backup source tree, it is
-  auto-excluded and a warning is printed (see `_with_repo_self_exclude` in code).
+- Restore refuses destinations inside or containing the repository; writes via staging,
+  then atomically replaces the destination (`--force` when overwrite is intended).
+- Manifests are immutable after commit; snapshots commit only after referenced blobs exist.
+- GC deletes only blobs unreferenced by all surviving snapshots.
+- Partial snapshots warn on CLI; `--strict` aborts without commit.
+- Repository inside the source tree is auto-excluded with a warning.
 
-## Symlinks
+See [docs/RUNBOOK.md](docs/RUNBOOK.md) for failure modes and recovery.
 
-By default, restore recreates symlink targets exactly as recorded in the manifest,
-including absolute paths and `..` segments. Use `--safe-symlinks` on restore to
-reject absolute or parent-escaping targets instead. Directory symlinks on Windows
-use the `is_dir_symlink` flag recorded at backup time.
+## Exclude patterns
 
-## Exclude Patterns
-
-`--exclude` patterns match manifest-relative POSIX paths:
+Patterns match manifest-relative POSIX paths. Patterns with `..` are rejected.
 
 | Pattern | Matches |
 |---------|---------|
-| `*.tmp` | Any file whose basename is `*.tmp` at any depth |
-| `__pycache__` | The `__pycache__` directory and everything under it |
-| `build/` | Paths under the `build/` directory prefix |
-| `tests/foo.py` | Only that exact path (patterns with `/` do not fall back to basename matching) |
-| `dir/*.py` | Files directly under `dir/` whose names match `*.py` |
-
-Patterns with `..` are rejected at the CLI with `Unsafe exclude pattern`.
-A leading `/` is optional and stripped (for example `/etc` and `etc` both match
-manifest paths under `etc/`). A trailing slash on a directory pattern (for
-example `build/`) also excludes the directory entry itself, not only paths under
-it.
-
-**Basename quirk:** patterns without `/` (for example `*.tmp`) also match on
-basename at any depth. Patterns with `/` (for example `tests/foo.py`) match only
-the full manifest path and do not fall back to basename matching.
-
-## Repository metadata
-
-Each repository stores metadata in `repo.json`:
-
-| Field | Meaning | Validated by `check` |
-|-------|---------|----------------------|
-| `version` | Repository format version (currently `1`) | yes |
-| `created_at` | UTC timestamp when the repository was initialized | no |
-| `hash_algorithm` | Content hash used for blobs (`sha256`) | yes |
-| `storage` | Storage model (`content-addressable`) | yes |
-| `object_layout` | Blob path layout (`sha256-prefix-2`) | yes |
-| `chunking` | Large-file chunking scheme (`fixed-1mb-blocks-above-threshold`) | yes |
-
-Use `backup-tool info --repo <path>` to print this metadata plus snapshot and
-object counts. Use `backup-tool show <snapshot> --repo <path>` to inspect one
-manifest without opening files manually.
-
-Implementation modules: see [ADR 0010](docs/adr/0010-module-layout.md) for
-`gc.py`, `verify.py`, and `metadata.py` (file mode/mtime restoration).
-
-## Limitations
-
-This tool is intended for small, local datasets in an academic setting:
-
-- Backup walks the source tree and materializes the full file list in memory
-  before sorting.
-- No parallel backup, compression, or encryption.
-- No incremental mtime-only fast path (every included file is re-hashed).
-- Stable-file detection reads each accepted file up to three times: two hash
-  passes to confirm unchanged content, then one store pass. The store pass is
-  checked against the stable hash; if it diverges, the file is skipped. This is
-  correct but expensive for large trees — see ADR 0012 for future work.
-- Non-dry-run backups stage new blobs under `tmp/staging/<snapshot-id>/` during
-  the scan and promote only blobs referenced by the committed manifest when the
-  snapshot succeeds. Strict aborts discard staging entirely; partial snapshots do
-  not promote blobs left over from skipped or failed file reads.
-- `check` requires derived manifest stat keys (`entry_count`, file counts,
-  `skipped_files`, `errors`, and similar) and cross-checks them against manifest
-  contents. Diff- and scan-derived stats (`new_files`, `changed_files`,
-  `new_bytes_stored`, and similar) are not validated.
-
-Manifests committed before digest sidecars were added cannot be loaded until
-you run `backup-tool migrate manifest-digests --repo <path>` once.
-
-## Repository Layout
-
-```text
-.mybackup/
-    objects/
-        ab/
-            abcdef...
-    snapshots/
-        2026-05-26T13-00-00Z_abcd1234.json
-        2026-05-26T13-00-00Z_abcd1234.json.sha256
-    tmp/
-    repo.json
-    lock
-```
-
-Blob files are stored under `objects/<first-two-hash-chars>/<full-hash>`.
+| `*.tmp` | Basename at any depth |
+| `__pycache__` | That directory and descendants |
+| `build/` | Prefix `build/` (and the directory entry) |
+| `tests/foo.py` | Exact path only (no basename fallback) |
 
 ## Development
-
-Run the test suite with pytest:
 
 ```powershell
 pip install -r requirements-dev.txt
 pip install -e .
 pytest
-```
-
-Run tests with coverage:
-
-```powershell
-coverage run -m pytest
-coverage report -m
-```
-
-Run lint and type checks:
-
-```powershell
 ruff check backup_tool tests
 mypy backup_tool
 ```
 
-CI installs the package with `pip install -e .`, smoke-tests `backup-tool version`, runs pytest with coverage (85% minimum), ruff, and mypy on `backup_tool/` on Ubuntu and Windows for Python 3.11 and 3.12.
+CI: editable install, `backup-tool version` smoke test, pytest with 85% coverage floor,
+ruff, mypy — Ubuntu and Windows, Python 3.11 and 3.12.
 
-On Windows, symlink tests are skipped unless Developer Mode (or equivalent
-symlink privilege) is enabled. Ubuntu CI covers symlink backup/restore.
+Windows symlink tests require Developer Mode (or equivalent); Ubuntu CI covers symlinks.
 
-The implementation covers the Version 1 CLI/library core: init, backup, list,
-restore, diff, verify, check, prune, gc, dry-run, excludes, strict mode,
-fixed-size block chunking for large files, repository locking with stale-lock
-recovery, path validation, and focused tests for chunking, strict/partial
-snapshots, symlinks, partial restore, prune+gc, lock behavior, CLI polish,
-empty/unchanged backups, and concurrent lock contention.
+## Limitations
+
+Intended for small local datasets: full tree in memory, no encryption/compression/remote
+backend, no mtime fast path, stable-read may read each file up to three times. See
+[docs/LESSONS_LEARNED.md](docs/LESSONS_LEARNED.md) and [ADR 0012](docs/adr/0012-scaling-and-incremental-scan-v2.md).
+
+Legacy repos without digest sidecars: run `backup-tool migrate manifest-digests --repo <path>` once.
