@@ -126,7 +126,9 @@ class Repository:
             try:
                 self._ensure_manifest_blobs_exist(result.manifest)
             except RepositoryError:
-                self._remove_promoted_blobs(result.promoted_blob_hashes)
+                result.warnings.extend(
+                    self._remove_promoted_blobs(result.promoted_blob_hashes)
+                )
                 raise
             self.manifest_store.save(result.manifest)
             result.committed = True
@@ -301,19 +303,30 @@ class Repository:
         if not self.objects_dir.exists() or not self.snapshots_dir.exists():
             raise RepositoryError(f"Repository is missing required directories: {self.path}")
 
-    def _remove_promoted_blobs(self, hash_hexes: frozenset[str]) -> None:
+    def _remove_promoted_blobs(self, hash_hexes: frozenset[str]) -> list[str]:
+        warnings: list[str] = []
         for hash_hex in hash_hexes:
             path = self.object_store.get_path(hash_hex)
             if not path.is_file():
                 continue
-            path.unlink()
+            try:
+                path.unlink()
+            except OSError as exc:
+                warnings.append(f"Could not remove promoted blob {hash_hex}: {exc}")
+                continue
             parent = path.parent
             if (
                 parent != self.object_store.objects_dir
                 and parent.exists()
                 and not any(parent.iterdir())
             ):
-                parent.rmdir()
+                try:
+                    parent.rmdir()
+                except OSError as exc:
+                    warnings.append(
+                        f"Could not remove promoted blob shard directory {parent}: {exc}"
+                    )
+        return warnings
 
     def _ensure_manifest_blobs_exist(self, manifest: Manifest) -> None:
         failures: list[str] = []

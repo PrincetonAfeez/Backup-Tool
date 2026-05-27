@@ -8,9 +8,11 @@ from pathlib import Path, PurePosixPath
 from backup_tool.errors import ManifestError, RestoreError
 
 
-def validate_exclude_pattern(pattern: str) -> str:
+def validate_exclude_pattern(pattern: object) -> str:
     """Validate a backup exclude pattern and return a manifest-relative form."""
 
+    if not isinstance(pattern, str):
+        raise ManifestError("Exclude pattern must be a string")
     normalized = pattern.replace("\\", "/")
     while normalized.startswith("/"):
         normalized = normalized[1:]

@@ -115,7 +115,7 @@ def verify_manifest_digest(manifest_path: Path) -> None:
     try:
         expected = validate_hash(sidecar.read_text(encoding="utf-8").strip())
         actual = hash_file(manifest_path).hash_hex
-    except (OSError, HashError, StoreError) as exc:
+    except (OSError, UnicodeDecodeError, HashError, StoreError) as exc:
         raise ManifestError(
             f"Could not verify manifest digest for {manifest_path.name}: {exc}"
         ) from exc
@@ -185,6 +185,12 @@ def _validate_manifest_source(source: Any) -> str:
     if not isinstance(source, str) or not source.strip():
         raise ManifestError("Manifest source must be a non-empty string")
     return source
+
+
+def _validate_manifest_string_field(value: object, *, field: str) -> str:
+    if not isinstance(value, str):
+        raise ManifestError(f"Manifest {field} must be a string")
+    return value
 
 
 def _validate_manifest_topology(files: dict[str, FileEntry]) -> None:
@@ -420,11 +426,14 @@ class Manifest:
         if missing:
             raise ManifestError(f"Manifest missing required keys: {', '.join(missing)}")
 
-        hash_algorithm = str(data["hash_algorithm"])
+        hash_algorithm = _validate_manifest_string_field(
+            data["hash_algorithm"],
+            field="hash_algorithm",
+        )
         if hash_algorithm != MANIFEST_HASH_ALGORITHM:
             raise ManifestError(f"Unsupported manifest hash algorithm: {hash_algorithm}")
 
-        status = str(data["status"])
+        status = _validate_manifest_string_field(data["status"], field="status")
         if status not in MANIFEST_STATUSES:
             raise ManifestError(f"Unsupported manifest status: {status}")
 
@@ -437,6 +446,8 @@ class Manifest:
 
         files: dict[str, FileEntry] = {}
         for raw_path, raw_entry in files_data.items():
+            if not isinstance(raw_path, (str, Path)):
+                raise ManifestError("Manifest file path must be a string or Path")
             path = normalize_manifest_path(raw_path)
             if path in files:
                 raise ManifestError(f"Duplicate normalized manifest path: {path}")
@@ -574,7 +585,7 @@ class ManifestStore:
         verify_manifest_digest(path)
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise ManifestError(f"Could not load manifest {path}: {exc}") from exc
         if not isinstance(data, dict):
             raise ManifestError("Manifest root must be an object")
@@ -597,7 +608,7 @@ class ManifestStore:
                 continue
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError) as exc:
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
                 skipped.append(f"{path.name}: Could not load manifest: {exc}")
                 continue
             if not isinstance(data, dict):

@@ -7,7 +7,15 @@ from pathlib import Path
 import pytest
 
 from backup_tool.errors import HashError, ManifestError, RepositoryError, StoreError
-from backup_tool.manifest import FileEntry, Manifest, validate_manifest_version
+from backup_tool.manifest import (
+    FileEntry,
+    Manifest,
+    ManifestStore,
+    verify_manifest_digest,
+    validate_manifest_version,
+    write_manifest_digest,
+)
+from backup_tool.paths import validate_exclude_pattern
 from backup_tool.object_store import ObjectStore, validate_hash
 from backup_tool.repo_metadata import validate_repo_version
 from backup_tool.staging import validate_created_at, validate_snapshot_id, validate_staging_snapshot_id
@@ -146,6 +154,128 @@ def test_backup_removes_promoted_blobs_when_post_verify_fails(
         repo.backup(source_dir)
 
     assert repo.object_store.iter_hashes() == []
+
+
+def test_manifest_from_dict_rejects_non_string_file_keys():
+    with pytest.raises(ManifestError, match="file path must be a string or Path"):
+        Manifest.from_dict(
+            {
+                "version": 1,
+                "snapshot_id": TEST_SNAPSHOT_ID,
+                "created_at": TEST_CREATED_AT,
+                "source": "src",
+                "hash_algorithm": "sha256",
+                "status": "complete",
+                "stats": {},
+                "files": {123: {"type": "file", "hash": manifest_hash("x")}},
+            }
+        )
+
+
+def test_manifest_from_dict_rejects_non_string_hash_algorithm():
+    with pytest.raises(ManifestError, match="hash_algorithm must be a string"):
+        Manifest.from_dict(
+            {
+                "version": 1,
+                "snapshot_id": TEST_SNAPSHOT_ID,
+                "created_at": TEST_CREATED_AT,
+                "source": "src",
+                "hash_algorithm": 123,
+                "status": "complete",
+                "stats": {},
+                "files": {},
+            }
+        )
+
+
+def test_manifest_from_dict_rejects_non_string_status():
+    with pytest.raises(ManifestError, match="status must be a string"):
+        Manifest.from_dict(
+            {
+                "version": 1,
+                "snapshot_id": TEST_SNAPSHOT_ID,
+                "created_at": TEST_CREATED_AT,
+                "source": "src",
+                "hash_algorithm": "sha256",
+                "status": 123,
+                "stats": {},
+                "files": {},
+            }
+        )
+
+
+def test_load_path_rejects_non_utf8_manifest(tmp_path: Path):
+    store = ManifestStore(tmp_path)
+    store.init()
+    path = store.save(_sample_manifest())
+    path.write_bytes(b"\xff\xfe not valid utf-8")
+    write_manifest_digest(path)
+
+    with pytest.raises(ManifestError, match="Could not load manifest"):
+        store.load_path(path)
+
+
+def test_verify_manifest_digest_rejects_non_utf8_sidecar(tmp_path: Path):
+    store = ManifestStore(tmp_path)
+    store.init()
+    path = store.save(_sample_manifest())
+    sidecar = path.with_name(f"{path.name}.sha256")
+    sidecar.write_bytes(b"\xff\xfe")
+
+    with pytest.raises(ManifestError, match="Could not verify manifest digest"):
+        verify_manifest_digest(path)
+
+
+def _sample_manifest(**overrides) -> Manifest:
+    data = {
+        "snapshot_id": TEST_SNAPSHOT_ID,
+        "created_at": TEST_CREATED_AT,
+        "source": "source",
+        "status": "complete",
+        "stats": {"entry_count": 0},
+        "files": {},
+    }
+    data.update(overrides)
+    return Manifest(**data)
+
+
+def test_migrate_missing_digests_skips_non_utf8_manifest(tmp_path: Path):
+    store = ManifestStore(tmp_path)
+    store.init()
+    path = store.path_for(TEST_SNAPSHOT_ID)
+    path.write_bytes(b"\xff\xfe")
+    result = store.migrate_missing_digests()
+    assert result.migrated == []
+    assert any("Could not load manifest" in item for item in result.skipped)
+
+
+def test_validate_exclude_pattern_rejects_non_string():
+    with pytest.raises(ManifestError, match="Exclude pattern must be a string"):
+        validate_exclude_pattern(123)  # type: ignore[arg-type]
+
+
+def test_backup_cleanup_failure_does_not_mask_verify_error(
+    repo: Repository,
+    source_dir: Path,
+    monkeypatch,
+):
+    (source_dir / "a.txt").write_text("hello", encoding="utf-8")
+    blob_path = repo.object_store.get_path(manifest_hash("hello"))
+    real_unlink = Path.unlink
+
+    def fail_verify(_manifest):
+        raise RepositoryError("Manifest references invalid blobs: a.txt: bad")
+
+    def selective_unlink(self, missing_ok=False):
+        if self == blob_path:
+            raise OSError("permission denied")
+        return real_unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(repo, "_ensure_manifest_blobs_exist", fail_verify)
+    monkeypatch.setattr(Path, "unlink", selective_unlink)
+
+    with pytest.raises(RepositoryError, match="invalid blobs"):
+        repo.backup(source_dir)
 
 
 def test_check_warns_on_orphan_manifest_digest_sidecar(
