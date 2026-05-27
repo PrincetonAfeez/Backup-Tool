@@ -284,7 +284,7 @@ class Repository:
     def _read_repo_metadata(self) -> dict[str, object]:
         try:
             metadata = json.loads(self.repo_json.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise RepositoryError(f"Invalid repo.json: {exc}") from exc
         if not isinstance(metadata, dict):
             raise RepositoryError("Repository metadata root must be an object")

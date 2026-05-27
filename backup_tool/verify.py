@@ -81,7 +81,7 @@ def check_repository(repo: Repository, *, repair: bool = False) -> CheckResult:
     try:
         metadata = json.loads(repo.repo_json.read_text(encoding="utf-8"))
         errors.extend(validate_repo_metadata(metadata))
-    except (OSError, json.JSONDecodeError) as exc:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         errors.append(f"Invalid repo.json: {exc}")
 
     for path in repo.manifest_store.list_paths():

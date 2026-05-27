@@ -21,7 +21,7 @@ def read_lock_pid(path: Path) -> int | None:
 
     try:
         text = path.read_text(encoding="utf-8")
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         return None
 
     for line in text.splitlines():
@@ -38,7 +38,7 @@ def read_lock_token(path: Path) -> str | None:
 
     try:
         text = path.read_text(encoding="utf-8")
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         return None
 
     for line in text.splitlines():
