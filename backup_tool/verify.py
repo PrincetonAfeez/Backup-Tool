@@ -137,10 +137,20 @@ def check_repository(repo: Repository, *, repair: bool = False) -> CheckResult:
         for sidecar in repo.snapshots_dir.glob("*.json.sha256")
         if not sidecar.with_name(sidecar.name.removesuffix(".sha256")).exists()
     )
+    removed_digest_sidecars = 0
     if orphan_digest_sidecars:
-        warnings.append(
-            f"{len(orphan_digest_sidecars)} orphan manifest digest sidecar(s) found"
-        )
+        if repair:
+            for sidecar in orphan_digest_sidecars:
+                sidecar.unlink(missing_ok=True)
+                removed_digest_sidecars += 1
+            if removed_digest_sidecars:
+                warnings.append(
+                    f"Removed {removed_digest_sidecars} orphan manifest digest sidecar(s)"
+                )
+        else:
+            warnings.append(
+                f"{len(orphan_digest_sidecars)} orphan manifest digest sidecar(s) found"
+            )
 
     known_snapshot_ids = {
         path.stem
@@ -184,5 +194,9 @@ def check_repository(repo: Repository, *, repair: bool = False) -> CheckResult:
         referenced_object_count=len(referenced),
         orphan_object_count=len(orphaned),
         quarantined_malformed=quarantined_malformed,
-        repaired=bool(quarantined_malformed or (repair and orphan_staging)),
+        repaired=bool(
+            quarantined_malformed
+            or (repair and orphan_staging)
+            or removed_digest_sidecars
+        ),
     )

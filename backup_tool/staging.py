@@ -100,7 +100,9 @@ def staging_snapshot_id(now: datetime, token: str) -> str:
     return validate_snapshot_id(f"{stamp}_{token}")
 
 
-def validate_staging_snapshot_id(snapshot_id: str) -> str:
+def validate_staging_snapshot_id(snapshot_id: object) -> str:
+    if not isinstance(snapshot_id, str):
+        raise StoreError("Invalid staging snapshot id: must be a string")
     if "/" in snapshot_id or "\\" in snapshot_id or snapshot_id in ("", ".", ".."):
         raise StoreError(f"Invalid staging snapshot id: {snapshot_id}")
     validate_snapshot_id(snapshot_id)

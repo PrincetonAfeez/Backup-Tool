@@ -51,6 +51,7 @@ class SnapshotResult:
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     stale_lock_cleared_pid: int | None = None
+    promoted_blob_hashes: frozenset[str] = field(default_factory=frozenset)
 
     @property
     def status(self) -> str:
@@ -213,6 +214,7 @@ class SnapshotEngine:
                 skipped=[item.to_dict() for item in skipped],
             )
 
+            promoted_blob_hashes: frozenset[str] = frozenset()
             if staging_active:
                 referenced_hashes = {
                     blob_hash
@@ -220,7 +222,7 @@ class SnapshotEngine:
                     if entry.type == "file"
                     for blob_hash in file_blob_hashes(entry)
                 }
-                self.object_store.promote_staging(
+                promoted_blob_hashes = self.object_store.promote_staging(
                     snapshot_id,
                     allowed_hashes=referenced_hashes,
                 )
@@ -232,6 +234,7 @@ class SnapshotEngine:
                 dry_run=dry_run,
                 skipped=skipped,
                 errors=errors,
+                promoted_blob_hashes=promoted_blob_hashes,
             )
         finally:
             if staging_active:

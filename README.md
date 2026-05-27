@@ -123,7 +123,8 @@ never modified in place; `prune` may delete old manifest files during retention.
     "new_files": 1,
     "regular_file_count": 2,
     "skipped_files": 0,
-    "symlink_count": 0
+    "symlink_count": 0,
+    "errors": 0
   },
   "status": "complete",
   "version": 1

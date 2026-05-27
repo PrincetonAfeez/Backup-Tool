@@ -6,10 +6,11 @@ from pathlib import Path
 
 import pytest
 
-from backup_tool.errors import HashError, ManifestError, StoreError
-from backup_tool.manifest import FileEntry, Manifest
+from backup_tool.errors import HashError, ManifestError, RepositoryError, StoreError
+from backup_tool.manifest import FileEntry, Manifest, validate_manifest_version
 from backup_tool.object_store import ObjectStore, validate_hash
-from backup_tool.staging import validate_created_at, validate_snapshot_id
+from backup_tool.repo_metadata import validate_repo_version
+from backup_tool.staging import validate_created_at, validate_snapshot_id, validate_staging_snapshot_id
 from backup_tool.repository import Repository
 from tests.conftest import TEST_CREATED_AT, TEST_SNAPSHOT_ID, manifest_hash
 
@@ -86,6 +87,65 @@ def test_check_reports_digest_verification_errors_instead_of_hash_error(
 
     assert result.ok is False
     assert any("Could not verify manifest digest" in error for error in result.errors)
+
+
+def test_validate_manifest_version_rejects_boolean():
+    with pytest.raises(ManifestError, match="Manifest version must be an integer"):
+        validate_manifest_version(True)
+
+
+def test_validate_repo_version_rejects_boolean():
+    assert validate_repo_version(True) == ["Repository version must be an integer"]
+
+
+def test_manifest_from_dict_rejects_non_object_root():
+    with pytest.raises(ManifestError, match="Manifest root must be an object"):
+        Manifest.from_dict([])  # type: ignore[arg-type]
+
+
+def test_file_entry_from_dict_rejects_non_object_root():
+    with pytest.raises(ManifestError, match="File entry must be an object"):
+        FileEntry.from_dict("file")  # type: ignore[arg-type]
+
+
+def test_validate_staging_snapshot_id_rejects_non_string():
+    with pytest.raises(StoreError, match="must be a string"):
+        validate_staging_snapshot_id(123)  # type: ignore[arg-type]
+
+
+def test_check_repair_removes_orphan_manifest_digest_sidecar(
+    repo: Repository,
+    source_dir: Path,
+):
+    (source_dir / "a.txt").write_text("hello", encoding="utf-8")
+    repo.backup(source_dir)
+    orphan = repo.snapshots_dir / "orphan.json.sha256"
+    orphan.write_text(f"{manifest_hash('orphan')}\n", encoding="utf-8")
+
+    result = repo.check(repair=True)
+
+    assert result.ok is True
+    assert result.repaired is True
+    assert not orphan.exists()
+    assert any("Removed 1 orphan manifest digest sidecar" in warning for warning in result.warnings)
+
+
+def test_backup_removes_promoted_blobs_when_post_verify_fails(
+    repo: Repository,
+    source_dir: Path,
+    monkeypatch,
+):
+    (source_dir / "a.txt").write_text("hello", encoding="utf-8")
+
+    def fail_verify(_manifest):
+        raise RepositoryError("Manifest references invalid blobs: a.txt: bad")
+
+    monkeypatch.setattr(repo, "_ensure_manifest_blobs_exist", fail_verify)
+
+    with pytest.raises(RepositoryError, match="invalid blobs"):
+        repo.backup(source_dir)
+
+    assert repo.object_store.iter_hashes() == []
 
 
 def test_check_warns_on_orphan_manifest_digest_sidecar(

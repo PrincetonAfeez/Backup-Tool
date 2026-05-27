@@ -123,7 +123,11 @@ class Repository:
             result.warnings.extend(source_warnings)
             if dry_run or result.manifest is None:
                 return result
-            self._ensure_manifest_blobs_exist(result.manifest)
+            try:
+                self._ensure_manifest_blobs_exist(result.manifest)
+            except RepositoryError:
+                self._remove_promoted_blobs(result.promoted_blob_hashes)
+                raise
             self.manifest_store.save(result.manifest)
             result.committed = True
             return result
@@ -296,6 +300,20 @@ class Repository:
             raise RepositoryError(f"Not a backup repository: {self.path}")
         if not self.objects_dir.exists() or not self.snapshots_dir.exists():
             raise RepositoryError(f"Repository is missing required directories: {self.path}")
+
+    def _remove_promoted_blobs(self, hash_hexes: frozenset[str]) -> None:
+        for hash_hex in hash_hexes:
+            path = self.object_store.get_path(hash_hex)
+            if not path.is_file():
+                continue
+            path.unlink()
+            parent = path.parent
+            if (
+                parent != self.object_store.objects_dir
+                and parent.exists()
+                and not any(parent.iterdir())
+            ):
+                parent.rmdir()
 
     def _ensure_manifest_blobs_exist(self, manifest: Manifest) -> None:
         failures: list[str] = []

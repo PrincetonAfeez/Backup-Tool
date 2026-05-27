@@ -443,6 +443,35 @@ def test_manifest_store_list_paths_missing_dir(tmp_path: Path):
     assert store.latest() is None
 
 
+def test_manifest_rejects_boolean_version_on_construct():
+    with pytest.raises(ManifestError, match="Manifest version must be an integer"):
+        Manifest(
+            snapshot_id=TEST_SNAPSHOT_ID,
+            created_at=TEST_CREATED_AT,
+            source="src",
+            status="complete",
+            stats={"entry_count": 0},
+            files={},
+            version=True,  # type: ignore[arg-type]
+        )
+
+
+def test_manifest_from_dict_rejects_boolean_version():
+    with pytest.raises(ManifestError, match="Manifest version must be an integer"):
+        Manifest.from_dict(
+            {
+                "version": True,
+                "snapshot_id": TEST_SNAPSHOT_ID,
+                "created_at": TEST_CREATED_AT,
+                "source": "src",
+                "hash_algorithm": "sha256",
+                "status": "complete",
+                "stats": {},
+                "files": {},
+            }
+        )
+
+
 def test_manifest_rejects_invalid_snapshot_id_on_construct():
     with pytest.raises(ManifestError, match="Invalid snapshot id"):
         Manifest(

@@ -25,6 +25,14 @@ from backup_tool.staging import (
 
 MANIFEST_VERSION = 1
 MANIFEST_HASH_ALGORITHM = "sha256"
+
+
+def validate_manifest_version(value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ManifestError("Manifest version must be an integer")
+    if value != MANIFEST_VERSION:
+        raise ManifestError(f"Unsupported manifest version: {value}")
+    return value
 MANIFEST_STATUSES = frozenset({"complete", "partial", "dry-run"})
 FILE_ENTRY_TYPES = frozenset({"file", "symlink", "directory"})
 DERIVED_MANIFEST_STAT_KEYS = frozenset(
@@ -290,7 +298,9 @@ class FileEntry:
             _validate_optional_mode(self.mode)
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "FileEntry":
+    def from_dict(cls, data: object) -> "FileEntry":
+        if not isinstance(data, dict):
+            raise ManifestError("File entry must be an object")
         entry_type = data.get("type")
         if entry_type not in FILE_ENTRY_TYPES:
             raise ManifestError(f"Unsupported file entry type: {entry_type}")
@@ -382,8 +392,7 @@ class Manifest:
     hash_algorithm: str = MANIFEST_HASH_ALGORITHM
 
     def __post_init__(self) -> None:
-        if self.version != MANIFEST_VERSION:
-            raise ManifestError(f"Unsupported manifest version: {self.version}")
+        validate_manifest_version(self.version)
         validate_snapshot_id(self.snapshot_id)
         validate_created_at(self.created_at)
         object.__setattr__(self, "source", _validate_manifest_source(self.source))
@@ -396,10 +405,11 @@ class Manifest:
         object.__setattr__(self, "files", _normalize_manifest_files(self.files))
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "Manifest":
-        version = data.get("version")
-        if version != MANIFEST_VERSION:
-            raise ManifestError(f"Unsupported manifest version: {version}")
+    def from_dict(cls, data: object) -> "Manifest":
+        if not isinstance(data, dict):
+            raise ManifestError("Manifest root must be an object")
+
+        version = validate_manifest_version(data.get("version"))
 
         files_data = data.get("files")
         if not isinstance(files_data, dict):

@@ -81,10 +81,11 @@ class ObjectStore:
         snapshot_id: str | None = None,
         *,
         allowed_hashes: set[str] | frozenset[str] | None = None,
-    ) -> None:
+    ) -> frozenset[str]:
         sid = snapshot_id or self._active_staging
+        promoted: set[str] = set()
         if sid is None:
-            return
+            return frozenset()
         root = self.staging_root(sid)
         allowed: set[str] | None = None
         if allowed_hashes is not None:
@@ -109,9 +110,11 @@ class ObjectStore:
                 final_path.parent.mkdir(parents=True, exist_ok=True)
                 os.replace(path, final_path)
                 fsync_directory(final_path.parent)
+                promoted.add(hash_hex)
             shutil.rmtree(root, ignore_errors=True)
         if self._active_staging == sid:
             self._active_staging = None
+        return frozenset(promoted)
 
     def has_staged_blob(self, hash_hex: str) -> bool:
         if self._active_staging is None:
