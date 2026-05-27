@@ -158,6 +158,18 @@ def test_is_excluded_absolute_style_pattern(engine: SnapshotEngine):
     assert engine._is_excluded("var/log", ["/etc"]) is False
 
 
+def test_exclude_dir_star_does_not_cross_directory(engine: SnapshotEngine, source_dir: Path):
+    (source_dir / "dir").mkdir()
+    (source_dir / "dir" / "top.py").write_text("x", encoding="utf-8")
+    (source_dir / "dir" / "sub").mkdir()
+    (source_dir / "dir" / "sub" / "nested.py").write_text("x", encoding="utf-8")
+
+    result = engine.build_snapshot(source_dir, None, excludes=["dir/*.py"])
+
+    assert "dir/top.py" not in result.manifest.files
+    assert "dir/sub/nested.py" in result.manifest.files
+
+
 def test_is_excluded_path_pattern_does_not_match_basename_only(engine: SnapshotEngine, source_dir: Path):
     nested = source_dir / "tests"
     nested.mkdir()

@@ -114,6 +114,18 @@ def test_exists_and_get_path(store: ObjectStore):
     assert store.exists(sha256(b"other").hexdigest()) is False
 
 
+def test_has_valid_blob_returns_false_when_blob_unreadable(store: ObjectStore, monkeypatch):
+    from backup_tool.errors import StoreError
+
+    blob = store.put_bytes(b"payload")
+
+    def fail_verify(_hash_hex: str) -> bool:
+        raise StoreError("Could not read blob")
+
+    monkeypatch.setattr(store, "verify_blob", fail_verify)
+    assert store.has_valid_blob(blob.hash_hex) is False
+
+
 def test_has_valid_blob_rejects_corrupt_existing_file(store: ObjectStore):
     blob = store.put_bytes(b"payload")
     path = store.get_path(blob.hash_hex)

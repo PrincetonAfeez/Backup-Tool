@@ -14,6 +14,7 @@ import pytest
 
 from backup_tool.cli import main
 from backup_tool.diff import classify_entries
+from backup_tool.errors import RestoreError
 from backup_tool.manifest import FileEntry
 from backup_tool.object_store import DEFAULT_TMP_MAX_AGE_SECONDS
 from backup_tool.repository import Repository

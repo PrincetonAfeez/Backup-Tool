@@ -82,6 +82,13 @@ def test_validate_exclude_pattern_accepts_safe_patterns():
     assert validate_exclude_pattern("/etc") == "etc"
 
 
+def test_manifest_path_matches_exclude_pattern_is_path_aware():
+    from backup_tool.paths import manifest_path_matches_exclude_pattern
+
+    assert manifest_path_matches_exclude_pattern("dir/top.py", "dir/*.py")
+    assert not manifest_path_matches_exclude_pattern("dir/sub/nested.py", "dir/*.py")
+
+
 @pytest.mark.parametrize(
     "target,expected",
     [

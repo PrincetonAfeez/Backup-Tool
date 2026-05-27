@@ -230,6 +230,10 @@ def test_cli_repository_error_exit_code(repo_path: Path):
     assert code == 1
 
 
+def test_cli_invalid_arguments_exit_code_one():
+    assert main(["backup"]) == 1
+
+
 def test_cli_info_counts_on_stdout(repo: Repository, repo_path: Path):
     stdout = io.StringIO()
     with redirect_stdout(stdout):

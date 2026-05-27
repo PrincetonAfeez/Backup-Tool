@@ -360,6 +360,19 @@ def test_manifest_direct_construct_rejects_blank_source():
         )
 
 
+def test_manifest_stats_consistency_errors_detect_missing_keys():
+    manifest = Manifest(
+        snapshot_id=TEST_SNAPSHOT_ID,
+        created_at=TEST_CREATED_AT,
+        source="src",
+        status="complete",
+        stats={},
+        files={},
+    )
+    errors = manifest_stats_consistency_errors(manifest)
+    assert any("stats.entry_count is missing" in error for error in errors)
+
+
 def test_manifest_stats_consistency_errors_detect_errors_mismatch():
     manifest = Manifest(
         snapshot_id=TEST_SNAPSHOT_ID,

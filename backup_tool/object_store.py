@@ -74,11 +74,19 @@ class ObjectStore:
         if self._active_staging == sid:
             self._active_staging = None
 
-    def promote_staging(self, snapshot_id: str | None = None) -> None:
+    def promote_staging(
+        self,
+        snapshot_id: str | None = None,
+        *,
+        allowed_hashes: set[str] | frozenset[str] | None = None,
+    ) -> None:
         sid = snapshot_id or self._active_staging
         if sid is None:
             return
         root = self.staging_root(sid)
+        allowed: set[str] | None = None
+        if allowed_hashes is not None:
+            allowed = {validate_hash(hash_hex) for hash_hex in allowed_hashes}
         if root.exists():
             for path in root.rglob("*"):
                 if not path.is_file():
@@ -88,6 +96,9 @@ class ObjectStore:
                 except StoreError:
                     continue
                 if path.parent.name != hash_hex[:2]:
+                    continue
+                if allowed is not None and hash_hex not in allowed:
+                    path.unlink(missing_ok=True)
                     continue
                 final_path = self.get_path(hash_hex)
                 if final_path.exists() and self._existing_blob_valid(hash_hex):
@@ -136,7 +147,7 @@ class ObjectStore:
             return False
         try:
             return self.verify_blob(hash_hex)
-        except IntegrityError:
+        except (IntegrityError, StoreError):
             return False
 
     def put_bytes(self, data: bytes) -> BlobInfo:

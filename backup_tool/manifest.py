@@ -63,6 +63,9 @@ def manifest_stats_consistency_errors(manifest: "Manifest") -> list[str]:
 
     derived = derived_manifest_stats(manifest)
     errors: list[str] = []
+    missing = DERIVED_MANIFEST_STAT_KEYS - manifest.stats.keys()
+    for key in sorted(missing):
+        errors.append(f"{manifest.snapshot_id}: stats.{key} is missing")
     for key in DERIVED_MANIFEST_STAT_KEYS:
         if key in manifest.stats and manifest.stats[key] != derived[key]:
             errors.append(

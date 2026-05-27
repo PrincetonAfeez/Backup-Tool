@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fnmatch
 from pathlib import Path, PurePosixPath
 
 from backup_tool.errors import ManifestError, RestoreError
@@ -18,6 +19,28 @@ def validate_exclude_pattern(pattern: str) -> str:
     if ".." in PurePosixPath(normalized).parts:
         raise ManifestError(f"Unsafe exclude pattern: {pattern}")
     return normalized
+
+
+def manifest_path_matches_exclude_pattern(manifest_path: str, pattern: str) -> bool:
+    """Match a manifest path to an exclude pattern with ``/`` in it.
+
+    ``*`` and ``?`` apply per path segment and do not cross ``/``.
+    """
+
+    if pattern in {"*", "**"}:
+        return fnmatch.fnmatch(manifest_path, pattern)
+
+    if "/" not in pattern:
+        return False
+
+    path_parts = PurePosixPath(manifest_path).parts
+    pattern_parts = PurePosixPath(pattern).parts
+    if len(path_parts) != len(pattern_parts):
+        return False
+    return all(
+        fnmatch.fnmatch(part, pattern_part)
+        for part, pattern_part in zip(path_parts, pattern_parts, strict=True)
+    )
 
 
 def normalize_manifest_path(path: str | Path) -> str:

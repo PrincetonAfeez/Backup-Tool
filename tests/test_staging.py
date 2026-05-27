@@ -33,9 +33,20 @@ def test_staging_promoted_to_objects(store: ObjectStore):
     blob_hash = sha256(b"payload").hexdigest()
     store.begin_staging(TEST_SNAPSHOT_ID)
     store.put_bytes(b"payload")
-    store.promote_staging(TEST_SNAPSHOT_ID)
+    store.promote_staging(TEST_SNAPSHOT_ID, allowed_hashes={blob_hash})
     assert store.get_path(blob_hash).exists()
     assert store.verify_blob(blob_hash)
+
+
+def test_promote_staging_skips_unreferenced_blobs(store: ObjectStore):
+    keep_hash = sha256(b"keep").hexdigest()
+    orphan_hash = sha256(b"orphan").hexdigest()
+    store.begin_staging(TEST_SNAPSHOT_ID)
+    store.put_bytes(b"keep")
+    store.put_bytes(b"orphan")
+    store.promote_staging(TEST_SNAPSHOT_ID, allowed_hashes={keep_hash})
+    assert store.get_path(keep_hash).exists()
+    assert not store.get_path(orphan_hash).exists()
 
 
 def test_strict_backup_leaves_no_orphan_blobs(repo: Repository, source_dir: Path):

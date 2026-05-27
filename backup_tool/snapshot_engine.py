@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from secrets import token_hex
 
-from backup_tool.chunking import hash_file_content, restore_file_content, store_file
+from backup_tool.chunking import file_blob_hashes, hash_file_content, restore_file_content, store_file
 from backup_tool.diff import DiffResult, classify_entries
 from backup_tool.errors import HashError, ManifestError, RestoreError, StoreError
 from backup_tool.manifest import FileEntry, Manifest
@@ -22,6 +22,7 @@ from backup_tool.object_store import ObjectStore
 from backup_tool.staging import staging_snapshot_id
 from backup_tool.paths import (
     assert_safe_symlink_target,
+    manifest_path_matches_exclude_pattern,
     normalize_manifest_path,
     safe_restore_path,
     source_relative_path,
@@ -213,7 +214,16 @@ class SnapshotEngine:
             )
 
             if staging_active:
-                self.object_store.promote_staging(snapshot_id)
+                referenced_hashes = {
+                    blob_hash
+                    for entry in manifest.files.values()
+                    if entry.type == "file"
+                    for blob_hash in file_blob_hashes(entry)
+                }
+                self.object_store.promote_staging(
+                    snapshot_id,
+                    allowed_hashes=referenced_hashes,
+                )
 
             return SnapshotResult(
                 manifest=manifest,
@@ -487,11 +497,19 @@ class SnapshotEngine:
     def _is_excluded(self, manifest_path: str, patterns: list[str]) -> bool:
         name = PurePosixPath(manifest_path).name
         for pattern in patterns:
-            normalized = validate_exclude_pattern(pattern) if pattern not in {"*", "**"} else pattern
-            if fnmatch.fnmatch(manifest_path, normalized):
-                return True
-            if "/" not in normalized and fnmatch.fnmatch(name, normalized):
-                return True
+            if pattern in {"*", "**"}:
+                if fnmatch.fnmatch(manifest_path, pattern):
+                    return True
+                continue
+            normalized = validate_exclude_pattern(pattern)
+            if "/" in normalized:
+                if manifest_path_matches_exclude_pattern(manifest_path, normalized):
+                    return True
+            else:
+                if fnmatch.fnmatch(manifest_path, normalized):
+                    return True
+                if fnmatch.fnmatch(name, normalized):
+                    return True
             base = normalized.rstrip("/")
             if manifest_path == base or manifest_path.startswith(base + "/"):
                 return True

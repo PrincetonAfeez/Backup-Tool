@@ -58,7 +58,7 @@ changes (permissions, timestamps) are stored in manifests but not listed.
 | 0 | Success |
 | 1 | General error (invalid arguments, repository error) |
 | 2 | Integrity or verification failure (`verify`, `check`) |
-| 3 | Backup completed with skipped files, or strict mode aborted |
+| 3 | Operation completed partially: backup skipped files, strict backup aborted, or restore skipped symlinks |
 | 4 | Unexpected internal error |
 | 5 | Could not acquire repository lock |
 
@@ -214,11 +214,13 @@ This tool is intended for small, local datasets in an academic setting:
   checked against the stable hash; if it diverges, the file is skipped. This is
   correct but expensive for large trees — see ADR 0012 for future work.
 - Non-dry-run backups stage new blobs under `tmp/staging/<snapshot-id>/` during
-  the scan and promote them to `objects/` only when the snapshot succeeds. Strict
-  aborts and failed scans discard staging instead of leaving orphan blobs.
-- `check` cross-checks manifest entry/skip counts and `stats.errors` against
-  the `skipped` list, but not diff- or scan-derived stats (`new_files`,
-  `changed_files`, `new_bytes_stored`, and similar).
+  the scan and promote only blobs referenced by the committed manifest when the
+  snapshot succeeds. Strict aborts discard staging entirely; partial snapshots do
+  not promote blobs left over from skipped or failed file reads.
+- `check` requires derived manifest stat keys (`entry_count`, file counts,
+  `skipped_files`, `errors`, and similar) and cross-checks them against manifest
+  contents. Diff- and scan-derived stats (`new_files`, `changed_files`,
+  `new_bytes_stored`, and similar) are not validated.
 
 Manifests committed before digest sidecars were added cannot be loaded until
 you run `backup-tool migrate manifest-digests --repo <path>` once.

@@ -14,8 +14,16 @@ from backup_tool.paths import validate_exclude_pattern
 from backup_tool.repository import Repository
 
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="backup-tool")
+class BackupToolArgumentParser(argparse.ArgumentParser):
+    """Argument parser that maps usage errors to exit code 1."""
+
+    def error(self, message: str) -> None:
+        self.print_usage(sys.stderr)
+        self.exit(1, f"{self.prog}: error: {message}\n")
+
+
+def build_parser() -> BackupToolArgumentParser:
+    parser = BackupToolArgumentParser(prog="backup-tool")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     subparsers.add_parser("version", help="print the backup-tool version")
@@ -126,7 +134,12 @@ def _add_break_lock(parser: argparse.ArgumentParser) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
-    args = parser.parse_args(argv)
+    try:
+        args = parser.parse_args(argv)
+    except SystemExit as exc:
+        if exc.code is None:
+            return 0
+        return int(exc.code) if isinstance(exc.code, int) else 1
 
     try:
         if args.command == "version":
