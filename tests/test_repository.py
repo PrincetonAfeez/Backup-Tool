@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from backup_tool.errors import LockError, RepositoryError, RestoreError
+from backup_tool.errors import LockError, ManifestError, RepositoryError, RestoreError
 from backup_tool.lock import RepositoryLock
 from backup_tool.repository import Repository
 from backup_tool.verify import check_repository
@@ -229,10 +229,8 @@ def test_verify_reports_missing_digest_sidecar(repo: Repository, source_dir: Pat
     manifest_path = repo.manifest_store.path_for(repo.manifest_store.latest().snapshot_id)
     manifest_path.with_name(f"{manifest_path.name}.sha256").unlink()
 
-    verify = repo.verify("latest")
-
-    assert verify.ok is False
-    assert any("digest sidecar missing" in error for error in verify.errors)
+    with pytest.raises(ManifestError, match="digest sidecar missing"):
+        repo.verify("latest")
 
 
 def test_check_invalid_manifest_and_repo_json(repo: Repository):

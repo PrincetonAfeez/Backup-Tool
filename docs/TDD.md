@@ -90,8 +90,9 @@ prefix=".restore-<snapshot-id>.")`), not under the repository `tmp/` tree.
 - **`check`:** repo metadata, all manifests + sidecars, references, orphans, malformed
   object paths, stale tmp.
 - **`check --repair`:** quarantines malformed object paths, quarantines unloadable snapshot
-  manifests, removes orphan manifest digest sidecars, and removes orphan staging directories
-  under `tmp/staging/`. Stale blob tmp files require `gc --aggressive`.
+  manifests, removes orphan manifest digest sidecars, removes stale blob/manifest/lock temp
+  files, and removes orphan staging directories under `tmp/staging/`. `gc --aggressive` can
+  also clean stale temp artifacts while performing garbage collection.
 
 ### Retention
 

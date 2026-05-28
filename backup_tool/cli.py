@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import sys
 from pathlib import Path
 from typing import NoReturn
@@ -13,6 +14,8 @@ from backup_tool.diff import DiffResult
 from backup_tool.errors import BackupToolError, IntegrityError, LockError, ManifestError
 from backup_tool.paths import validate_exclude_pattern, validate_restore_file_path
 from backup_tool.repository import Repository
+
+logger = logging.getLogger("backup_tool")
 
 
 class BackupToolArgumentParser(argparse.ArgumentParser):
@@ -25,6 +28,12 @@ class BackupToolArgumentParser(argparse.ArgumentParser):
 
 def build_parser() -> BackupToolArgumentParser:
     parser = BackupToolArgumentParser(prog="backup-tool")
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=__version__,
+        help="print the backup-tool version and exit",
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     subparsers.add_parser("version", help="print the backup-tool version")
@@ -141,6 +150,14 @@ def _add_break_lock(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _configure_logging() -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(levelname)s: %(message)s",
+        force=True,
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     try:
@@ -149,6 +166,8 @@ def main(argv: list[str] | None = None) -> int:
         if exc.code is None:
             return 0
         return int(exc.code) if isinstance(exc.code, int) else 1
+
+    _configure_logging()
 
     try:
         if args.command == "version":
@@ -177,24 +196,24 @@ def main(argv: list[str] | None = None) -> int:
                 break_lock=args.break_lock,
             )
             if backup_result.manifest is None:
-                print("Backup aborted; no snapshot committed.", file=sys.stderr)
+                logger.error("Backup aborted; no snapshot committed.")
                 for item in backup_result.skipped:
-                    print(f"skipped: {item.path}: {item.reason}", file=sys.stderr)
+                    logger.warning("skipped: %s: %s", item.path, item.reason)
                 return 3
 
             manifest = backup_result.manifest
             if args.verbose and backup_result.stale_lock_cleared_pid is not None:
-                print(
-                    f"warning: removed stale lock (pid={backup_result.stale_lock_cleared_pid})",
-                    file=sys.stderr,
+                logger.warning(
+                    "removed stale lock (pid=%s)",
+                    backup_result.stale_lock_cleared_pid,
                 )
             for warning in backup_result.warnings:
-                print(f"warning: {warning}", file=sys.stderr)
+                logger.warning("%s", warning)
 
             if backup_result.dry_run:
-                print(
-                    f"Dry run: snapshot {manifest.snapshot_id} was not committed.",
-                    file=sys.stderr,
+                logger.info(
+                    "Dry run: snapshot %s was not committed.",
+                    manifest.snapshot_id,
                 )
             else:
                 print(f"Snapshot {manifest.snapshot_id} committed.")
@@ -203,9 +222,9 @@ def main(argv: list[str] | None = None) -> int:
                         "skipped_files",
                         len(backup_result.skipped),
                     )
-                    print(
-                        f"warning: snapshot is partial ({skipped_count} file(s) skipped)",
-                        file=sys.stderr,
+                    logger.warning(
+                        "snapshot is partial (%s file(s) skipped)",
+                        skipped_count,
                     )
 
             _print_backup_summary(manifest.stats)
@@ -277,11 +296,11 @@ def main(argv: list[str] | None = None) -> int:
                 f"{restore_result.restored_symlinks} symlink(s) to {restore_result.destination}"
             )
             for warning in restore_result.warnings:
-                print(f"warning: {warning}", file=sys.stderr)
+                logger.warning("%s", warning)
             if restore_result.failed_symlinks:
-                print(
-                    f"warning: restore is partial ({restore_result.failed_symlinks} symlink(s) failed)",
-                    file=sys.stderr,
+                logger.warning(
+                    "restore is partial (%s symlink(s) failed)",
+                    restore_result.failed_symlinks,
                 )
             return 3 if restore_result.failed_symlinks else 0
 
@@ -293,12 +312,12 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "verify":
             verify_result = repo.verify(args.snapshot)
             for warning in verify_result.warnings:
-                print(f"warning: {warning}", file=sys.stderr)
+                logger.warning("%s", warning)
             if verify_result.ok:
                 print(f"Snapshot {verify_result.snapshot_id} verified.")
                 return 0
             for error in verify_result.errors:
-                print(f"error: {error}", file=sys.stderr)
+                logger.error("%s", error)
             return 2
 
         if args.command == "check":
@@ -308,26 +327,25 @@ def main(argv: list[str] | None = None) -> int:
                 f"referenced={check_result.referenced_object_count} orphans={check_result.orphan_object_count}"
             )
             for warning in check_result.warnings:
-                print(f"warning: {warning}", file=sys.stderr)
+                logger.warning("%s", warning)
             for quarantined_item in check_result.quarantined_malformed:
                 print(f"quarantined: {quarantined_item}")
             for quarantined_manifest in check_result.quarantined_manifests:
                 print(f"quarantined: {quarantined_manifest}")
             if check_result.repaired and not check_result.ok:
-                print(
-                    "warning: repository partially repaired; unresolved errors remain.",
-                    file=sys.stderr,
+                logger.warning(
+                    "repository partially repaired; unresolved errors remain.",
                 )
             if check_result.orphan_object_count > 0:
-                print(
-                    f"hint: run `backup-tool gc --repo {args.repo}` to remove unreferenced blobs.",
-                    file=sys.stderr,
+                logger.info(
+                    "hint: run `backup-tool gc --repo %s` to remove unreferenced blobs.",
+                    args.repo,
                 )
             if check_result.ok:
                 print("Repository check passed.")
                 return 0
             for error in check_result.errors:
-                print(f"error: {error}", file=sys.stderr)
+                logger.error("%s", error)
             return 2
 
         if args.command == "prune":
@@ -348,9 +366,9 @@ def main(argv: list[str] | None = None) -> int:
                     f"bytes={prune_result.gc_result.bytes_deleted}."
                 )
             elif prune_result.deleted_snapshots:
-                print(
-                    f"hint: run `backup-tool gc --repo {args.repo}` or use --gc to reclaim blob space.",
-                    file=sys.stderr,
+                logger.info(
+                    "hint: run `backup-tool gc --repo %s` or use --gc to reclaim blob space.",
+                    args.repo,
                 )
             return 0
 
@@ -382,26 +400,26 @@ def main(argv: list[str] | None = None) -> int:
                 else:
                     print("No manifests required digest migration.")
                 for skipped_message in migrate_result.skipped:
-                    print(f"skipped: {skipped_message}", file=sys.stderr)
+                    logger.warning("skipped: %s", skipped_message)
                 return 0
 
         parser.error(f"Unknown command: {args.command}")
         return 1
 
     except IntegrityError as exc:
-        print(f"integrity error: {exc}", file=sys.stderr)
+        logger.error("integrity error: %s", exc)
         return 2
     except LockError as exc:
-        print(f"lock error: {exc}", file=sys.stderr)
+        logger.error("lock error: %s", exc)
         return 5
     except ManifestError as exc:
-        print(f"error: {exc}", file=sys.stderr)
+        logger.error("%s", exc)
         return 1
     except BackupToolError as exc:
-        print(f"error: {exc}", file=sys.stderr)
+        logger.error("%s", exc)
         return 1
     except Exception as exc:
-        print(f"internal error: {exc}", file=sys.stderr)
+        logger.error("internal error: %s", exc)
         return 4
 
 

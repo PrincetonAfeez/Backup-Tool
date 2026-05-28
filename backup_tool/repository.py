@@ -9,7 +9,7 @@ from pathlib import Path
 from backup_tool.atomic import atomic_write_json, fsync_directory
 from backup_tool.chunking import verify_file_entry
 from backup_tool.diff import DiffResult, diff_manifests
-from backup_tool.errors import IntegrityError, ManifestError, RepositoryError, StoreError
+from backup_tool.errors import IntegrityError, RepositoryError, StoreError
 from backup_tool.gc import GCResult, gc_unlocked
 from backup_tool.lock import RepositoryLock
 from backup_tool.manifest import Manifest, ManifestStore, MigrateDigestResult
@@ -200,10 +200,7 @@ class Repository:
     def verify(self, snapshot_id: str, break_lock: bool = False) -> VerifyResult:
         self._ensure_initialized()
         with RepositoryLock(self.lock_path, break_lock=break_lock):
-            try:
-                manifest = self._resolve_snapshot(snapshot_id)
-            except (ManifestError, RepositoryError) as exc:
-                return VerifyResult(False, snapshot_id, [str(exc)])
+            manifest = self._resolve_snapshot(snapshot_id)
             return verify_manifest(self, manifest)
 
     def check(self, break_lock: bool = False, repair: bool = False) -> CheckResult:

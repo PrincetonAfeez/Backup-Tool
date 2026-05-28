@@ -41,11 +41,13 @@ Equivalent forms: `python -m backup_tool.cli …` or the `backup-tool` console s
 | [docs/IDS.md](docs/IDS.md) | Interface design (CLI contracts, I/O, side effects) |
 | [docs/adr/README.md](docs/adr/README.md) | Architecture decision records (0001–0012) |
 | [Schema/README.md](Schema/README.md) | JSON schemas aligned with runtime validation |
+| [CHANGELOG.md](CHANGELOG.md) | Notable changes by release |
 | [docs/RELEASE.md](docs/RELEASE.md) | Version bump checklist |
 
 ## Commands
 
 ```text
+backup-tool --version
 backup-tool version
 backup-tool init --repo <path> [--allow-nonempty] [--break-lock]
 backup-tool backup <src> --repo <path> [--exclude <pattern>] [--dry-run] [--strict] [--verbose] [--break-lock]

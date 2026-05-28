@@ -9,9 +9,10 @@ Library contracts: `Repository` and types in [TDD](TDD.md). JSON shapes: [`Schem
 
 ## Commands
 
-| Command | Purpose |
-|---------|---------|
-| `version` | Print package version |
+| Command / flag | Purpose |
+|----------------|---------|
+| `--version` | Print package version (no subcommand) |
+| `version` | Print package version (subcommand) |
 | `init` | Initialize repository |
 | `backup` | Create snapshot |
 | `list` | List snapshots |
@@ -29,13 +30,14 @@ Library contracts: `Repository` and types in [TDD](TDD.md). JSON shapes: [`Schem
 
 ## Invocation reference
 
-### `version`
+### `--version` / `version`
 
 ```powershell
+backup-tool --version
 backup-tool version
 ```
 
-Stdout: `<version>` · Exit: 0
+`--version` stdout: `<version>` · `version` subcommand stdout: `<version>` · Exit: 0
 
 ### `init`
 
@@ -136,7 +138,7 @@ Stdout: Added / Changed / Deleted groups + summary
 backup-tool verify <snapshot> --repo <path>
 ```
 
-Success: `Snapshot <id> verified.` · Failure: `error: <path>: ...` · Exit: 2 on integrity failure.
+Success: `Snapshot <id> verified.` · Unknown/invalid snapshot: exit 1 (same as `show`/`restore`/`diff`) · Blob integrity failure: exit 2 (`error: <path>: ...`)
 Loads the manifest digest sidecar during manifest read; does not validate stats consistency.
 
 ### `check`
@@ -179,7 +181,7 @@ backup-tool migrate manifest-digests --repo <path> [--break-lock]
 |:----:|---------|
 | 0 | Success |
 | 1 | General / repository / argument error |
-| 2 | Integrity failure (`verify`, `check`) |
+| 2 | Integrity failure (`verify` blob checks, `check`) |
 | 3 | Partial backup, strict abort, or partial restore |
 | 4 | Unexpected internal error |
 | 5 | Lock not acquired |

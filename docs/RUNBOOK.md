@@ -163,10 +163,14 @@ backup-tool gc --repo PATH
 ### Interrupted backup
 
 ```powershell
-backup-tool check --repo PATH
-backup-tool gc --repo PATH --aggressive   # if stale tmp reported
+backup-tool check --repo PATH --repair
 backup-tool backup ...
 ```
+
+`check --repair` removes stale blob temp files, stale manifest temp files, stale lock temp
+files, orphan digest sidecars, and orphan staging directories so a follow-up backup can
+proceed. `gc --aggressive` can also clean stale temp artifacts while performing garbage
+collection.
 
 ### Malformed object paths and hygiene repair
 
@@ -177,7 +181,6 @@ backup-tool check --repo PATH --repair
 `--repair` quarantines malformed object paths and unloadable snapshot manifests under
 `tmp/quarantine/`, removes orphan manifest digest sidecars, and removes orphan
 `tmp/staging/` directories. Orphan **blobs** still require `gc` (not deleted by `--repair`).
-Stale blob tmp files are reported as warnings; remove them with `gc --aggressive`.
 
 ### Orphan snapshot manifest (no sidecar)
 

@@ -31,6 +31,13 @@ def test_cli_version():
     assert stdout.getvalue().strip() == __version__
 
 
+def test_cli_version_flag():
+    stdout = io.StringIO()
+    with redirect_stdout(stdout):
+        assert main(["--version"]) == 0
+    assert stdout.getvalue().strip() == __version__
+
+
 def test_cli_init_and_smoke(repo_path: Path, source_dir: Path, tmp_path: Path):
     (source_dir / "a.txt").write_text("hello", encoding="utf-8")
     restore = tmp_path / "restore"
@@ -154,6 +161,18 @@ def test_cli_verify_failure(repo: Repository, source_dir: Path, repo_path: Path)
     with redirect_stderr(stderr):
         code = main(["verify", "latest", "--repo", str(repo_path)])
     assert code == 2
+
+
+def test_cli_verify_missing_snapshot_exit_code(repo_path: Path):
+    main(["init", "--repo", str(repo_path)])
+    missing_id = "2026-01-01T00-00-00-000000Z_deadbeee"
+    stderr = io.StringIO()
+    with redirect_stderr(stderr):
+        verify_code = main(["verify", missing_id, "--repo", str(repo_path)])
+        show_code = main(["show", missing_id, "--repo", str(repo_path)])
+    assert verify_code == 1
+    assert show_code == 1
+    assert "Snapshot not found" in stderr.getvalue()
 
 
 def test_cli_gc_dry_run(repo: Repository, repo_path: Path):
