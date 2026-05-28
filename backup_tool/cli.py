@@ -76,7 +76,10 @@ def build_parser() -> BackupToolArgumentParser:
     diff_parser.add_argument("--repo", required=True, type=Path)
     diff_parser.add_argument("--verbose", action="store_true")
 
-    verify_parser = subparsers.add_parser("verify", help="verify a snapshot")
+    verify_parser = subparsers.add_parser(
+        "verify",
+        help="verify blob content for one snapshot (loads digest sidecar during manifest read)",
+    )
     verify_parser.add_argument("snapshot")
     verify_parser.add_argument("--repo", required=True, type=Path)
 
@@ -86,9 +89,10 @@ def build_parser() -> BackupToolArgumentParser:
         "--repair",
         action="store_true",
         help=(
-            "repair safe repository hygiene issues: quarantine malformed object paths, "
-            "quarantine unloadable snapshot manifests, remove orphan manifest digest "
-            "sidecars, and remove stale orphan staging dirs"
+            "repair safe repository hygiene issues: migrate missing manifest digests, "
+            "quarantine malformed object paths, quarantine unloadable snapshot manifests, "
+            "remove orphan manifest digest sidecars, remove stale tmp artifacts, and "
+            "remove stale orphan staging dirs"
         ),
     )
     _add_break_lock(check_parser)
@@ -238,6 +242,7 @@ def main(argv: list[str] | None = None) -> int:
             print(
                 f"snapshots={info.snapshot_count} objects={info.object_count} "
                 f"last_backup={last}",
+                file=sys.stderr,
             )
             return 0
 

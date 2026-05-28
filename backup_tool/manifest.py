@@ -108,6 +108,28 @@ def write_manifest_digest(manifest_path: Path) -> None:
     atomic_write_text(manifest_digest_path(manifest_path), f"{digest}\n")
 
 
+def try_migrate_manifest_digest(manifest_path: Path) -> bool:
+    """Write a missing digest sidecar when manifest JSON is otherwise valid."""
+
+    sidecar = manifest_digest_path(manifest_path)
+    if sidecar.exists():
+        return False
+    try:
+        data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return False
+    if not isinstance(data, dict):
+        return False
+    try:
+        manifest = Manifest.from_dict(data)
+    except ManifestError:
+        return False
+    if manifest.snapshot_id != manifest_path.stem:
+        return False
+    write_manifest_digest(manifest_path)
+    return True
+
+
 def verify_manifest_digest(manifest_path: Path) -> None:
     sidecar = manifest_digest_path(manifest_path)
     if not sidecar.exists():

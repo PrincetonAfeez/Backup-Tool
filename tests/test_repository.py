@@ -223,6 +223,18 @@ def test_verify_detects_corrupt_blob(repo: Repository, source_dir: Path):
     assert any("Hash mismatch" in error for error in verify.errors)
 
 
+def test_verify_reports_missing_digest_sidecar(repo: Repository, source_dir: Path):
+    (source_dir / "a.txt").write_text("hello", encoding="utf-8")
+    repo.backup(source_dir)
+    manifest_path = repo.manifest_store.path_for(repo.manifest_store.latest().snapshot_id)
+    manifest_path.with_name(f"{manifest_path.name}.sha256").unlink()
+
+    verify = repo.verify("latest")
+
+    assert verify.ok is False
+    assert any("digest sidecar missing" in error for error in verify.errors)
+
+
 def test_check_invalid_manifest_and_repo_json(repo: Repository):
     (repo.snapshots_dir / "bad.json").write_text("{bad", encoding="utf-8")
     repo.repo_json.write_text("{bad", encoding="utf-8")

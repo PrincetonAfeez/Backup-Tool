@@ -98,7 +98,7 @@ class SnapshotEngine:
         if not source.exists() or not source.is_dir():
             raise ManifestError(f"Source must be an existing directory: {source}")
 
-        excludes = [pattern.replace("\\", "/") for pattern in (excludes or [])]
+        excludes = [validate_exclude_pattern(pattern) for pattern in (excludes or [])]
         files: dict[str, FileEntry] = {}
         skipped: list[SkippedItem] = []
         errors: list[str] = []
@@ -573,20 +573,17 @@ class SnapshotEngine:
     def _check_destination_merge(self, destination: Path, force: bool) -> None:
         """Allow non-empty directories when restoring a selected path only."""
 
+        del force
         if not os.path.lexists(destination):
             return
 
         if destination.is_symlink():
-            if force:
-                return
-            raise RestoreError(f"Destination already exists: {destination}")
+            raise RestoreError("Spot restore destination must be a directory, not a symlink")
 
         if destination.is_dir():
             return
 
-        if force:
-            return
-        raise RestoreError(f"Destination already exists: {destination}")
+        raise RestoreError("Spot restore destination must be a directory, not a regular file")
 
     def _merge_restore_tree(
         self,

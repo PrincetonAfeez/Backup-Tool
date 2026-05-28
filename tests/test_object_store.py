@@ -147,3 +147,24 @@ def test_verify_blob_converts_hash_error_to_store_error(store: ObjectStore, monk
     monkeypatch.setattr("backup_tool.object_store.hash_file", fail_hash)
     with pytest.raises(StoreError, match="Could not read blob"):
         store.verify_blob(blob.hash_hex)
+
+
+def test_iter_blob_paths_ignores_symlinks(store: ObjectStore, tmp_path: Path):
+    import os
+
+    if not hasattr(os, "symlink"):
+        pytest.skip("symlinks unavailable")
+
+    try:
+        blob = store.put_bytes(b"payload")
+        blob_path = store.get_path(blob.hash_hex)
+        blob_path.unlink()
+        outside = tmp_path / "outside.bin"
+        outside.write_bytes(b"outside")
+        os.symlink(outside, blob_path)
+    except OSError:
+        pytest.skip("symlink creation is not supported on this platform")
+
+    assert blob.hash_hex not in store.iter_hashes()
+    assert store.has_valid_blob(blob.hash_hex) is False
+    assert blob_path in store.iter_malformed_paths()

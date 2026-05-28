@@ -19,14 +19,15 @@ Licensed under [MIT](LICENSE).
 ## Quick start
 
 ```powershell
-python -m backup_tool.cli init --repo .mybackup
-python -m backup_tool.cli backup . --repo .mybackup --exclude ".mybackup"
-python -m backup_tool.cli list --repo .mybackup
-python -m backup_tool.cli verify latest --repo .mybackup
-python -m backup_tool.cli restore latest --repo .mybackup --to restored
+python -m backup_tool init --repo .mybackup
+python -m backup_tool backup . --repo .mybackup --exclude ".mybackup"
+python -m backup_tool list --repo .mybackup
+python -m backup_tool verify latest --repo .mybackup
+python -m backup_tool restore latest --repo .mybackup --to restored
 ```
 
-After `pip install -e .`, use the `backup-tool` console script instead of `python -m backup_tool.cli`.
+Equivalent forms: `python -m backup_tool.cli …` or the `backup-tool` console script after
+`pip install -e .`.
 
 ## Documentation
 
@@ -138,18 +139,27 @@ backup-tool prune --repo .mybackup --keep 5 --gc
 ```
 
 Large files (over 1 MiB) use fixed-size chunks ([ADR 0008](docs/adr/0008-fixed-size-block-chunking.md)).
-`verify` detects missing blobs and hash mismatches, not manifest tampering —
+`verify` loads the manifest digest sidecar and checks referenced blob content; it does not
+detect malicious tampering when manifest and sidecar are rewritten together —
 [ADR 0009](docs/adr/0009-manifest-trust-and-tamper-model.md).
+
+JSON schemas under [`Schema/`](Schema/README.md) document on-disk formats; they ship with
+the source repository only (not in the PyPI/wheel package).
 
 ## Safety rules
 
 - Backup never mutates the source directory.
 - Restore refuses destinations inside or containing the repository; writes via staging,
   then atomically replaces the destination (`--force` when overwrite is intended).
+- **Symlinks:** default restore recreates symlink targets exactly (faithful archival).
+  Use `--safe-symlinks` on untrusted repositories to reject absolute, drive-letter, UNC,
+  empty, and `..`-escaping targets.
 - Manifests are immutable after commit; snapshots commit only after referenced blobs exist.
 - GC deletes only blobs unreferenced by all surviving snapshots.
 - Partial snapshots warn on CLI; `--strict` aborts without commit.
 - Repository inside the source tree is auto-excluded with a warning.
+- **`--break-lock`:** use only after confirming no active `backup-tool` process holds the
+  lock (backup, restore, check, prune, gc, migrate).
 
 See [docs/RUNBOOK.md](docs/RUNBOOK.md) for failure modes and recovery.
 

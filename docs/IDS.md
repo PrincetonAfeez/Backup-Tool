@@ -112,13 +112,15 @@ See [TDD restore flow](TDD.md#restore).
 
 | Concern | `verify` | `check` |
 |---------|----------|---------|
-| Blob presence and file hash | Per snapshot | All snapshots |
-| Manifest digest sidecar | No | Yes |
+| Manifest load + digest sidecar | Selected snapshot (via `ManifestStore.load`) | All snapshots |
+| Blob presence and file hash | Selected snapshot | All snapshots |
 | Manifest stats consistency | No | Yes |
-| Orphan blobs | No | Warns |
+| Orphan blobs / hygiene | No | Warns; `--repair` fixes safe issues |
 
-`verify` answers “can I restore this snapshot’s files?” `check` answers “is the repository
-healthy?” See [ADR 0009](adr/0009-manifest-trust-and-tamper-model.md).
+`verify` loads and digest-checks the selected manifest, then verifies referenced blobs.
+It does not detect malicious tampering when manifest and sidecar are rewritten together.
+`check` validates all manifests, stats, references, and repository hygiene.
+See [ADR 0009](adr/0009-manifest-trust-and-tamper-model.md).
 
 ### `diff`
 
@@ -134,7 +136,8 @@ Stdout: Added / Changed / Deleted groups + summary
 backup-tool verify <snapshot> --repo <path>
 ```
 
-Success: `Snapshot <id> verified.` · Failure: `error: <path>: ...` · Exit: 2 on integrity failure
+Success: `Snapshot <id> verified.` · Failure: `error: <path>: ...` · Exit: 2 on integrity failure.
+Loads the manifest digest sidecar during manifest read; does not validate stats consistency.
 
 ### `check`
 
@@ -142,9 +145,9 @@ Success: `Snapshot <id> verified.` · Failure: `error: <path>: ...` · Exit: 2 o
 backup-tool check --repo <path> [--repair] [--break-lock]
 ```
 
-Stdout: counts + `Repository check passed.` or errors · `--repair`: quarantine malformed
-object paths, quarantine unloadable snapshot manifests, remove orphan digest sidecars,
-remove orphan `tmp/staging/` dirs. Stale blob tmp requires `gc --aggressive`.
+Stdout: counts + `Repository check passed.` or errors · `--repair`: migrate missing manifest
+digests, quarantine malformed object paths, quarantine unloadable snapshot manifests,
+remove orphan digest sidecars, remove stale tmp artifacts, remove orphan `tmp/staging/` dirs.
 
 ### `prune`
 
@@ -250,8 +253,11 @@ None required at runtime. Dev/CI use `pyproject.toml` tool sections (pytest, cov
 
 ## Public Python API
 
-Primary types: `Repository`, `Manifest`, `FileEntry`, `ObjectStore`, `SnapshotEngine`.
-Entry: `Repository.init`, `.backup`, `.restore`, `.verify`, `.check`, `.prune`, `.gc`.
+Primary entry point: `Repository` (exported from `backup_tool`).
+
+Additional types (`Manifest`, `FileEntry`, `ObjectStore`, `SnapshotEngine`, result
+dataclasses) are public by submodule import, for example `from backup_tool.manifest import Manifest`.
+The package `__init__` intentionally exports only `Repository` to keep the facade narrow.
 
 ---
 

@@ -50,6 +50,12 @@ def validate_hash(hash_hex: object) -> str:
     return hash_hex.lower()
 
 
+def _is_regular_object_file(path: Path) -> bool:
+    """Return True when ``path`` is a regular file rather than a symlink."""
+
+    return not path.is_symlink() and path.is_file()
+
+
 class ObjectStore:
     """Store raw bytes by SHA-256 content hash."""
 
@@ -103,7 +109,7 @@ class ObjectStore:
             allowed = {validate_hash(hash_hex) for hash_hex in allowed_hashes}
         if root.exists():
             for path in root.rglob("*"):
-                if not path.is_file():
+                if not _is_regular_object_file(path):
                     continue
                 try:
                     hash_hex = validate_hash(path.name)
@@ -118,7 +124,7 @@ class ObjectStore:
                 if final_path.exists() and self._existing_blob_valid(hash_hex):
                     path.unlink(missing_ok=True)
                     continue
-                if final_path.is_file():
+                if _is_regular_object_file(final_path):
                     repaired_blobs.add(hash_hex)
                 else:
                     new_blobs.add(hash_hex)
@@ -133,7 +139,7 @@ class ObjectStore:
     def has_staged_blob(self, hash_hex: str) -> bool:
         if self._active_staging is None:
             return False
-        return self.staging_path(hash_hex).is_file()
+        return _is_regular_object_file(self.staging_path(hash_hex))
 
     def get_path(self, hash_hex: str) -> Path:
         hash_hex = validate_hash(hash_hex)
@@ -162,7 +168,7 @@ class ObjectStore:
 
     def _existing_blob_valid(self, hash_hex: str) -> bool:
         final_path = self.get_path(hash_hex)
-        if not final_path.is_file():
+        if not _is_regular_object_file(final_path):
             return False
         try:
             return self.verify_blob(hash_hex)
@@ -322,7 +328,9 @@ class ObjectStore:
 
         blobs: list[tuple[str, Path]] = []
         for path in self.objects_dir.rglob("*"):
-            if not path.is_file():
+            if path.is_symlink():
+                continue
+            if not _is_regular_object_file(path):
                 continue
             try:
                 hash_hex = validate_hash(path.name)
@@ -342,7 +350,10 @@ class ObjectStore:
             return malformed
 
         for path in self.objects_dir.rglob("*"):
-            if not path.is_file():
+            if path.is_symlink():
+                malformed.append(path)
+                continue
+            if not _is_regular_object_file(path):
                 continue
             try:
                 hash_hex = validate_hash(path.name)

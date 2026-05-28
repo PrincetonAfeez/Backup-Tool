@@ -1,0 +1,40 @@
+project_name: Backup Tool
+tier: L
+domain_modules:
+  - cli_tool
+  - library
+  - persistence_store
+claimed_behavior:
+  - "Provides a local Python CLI and library API for initializing repositories and creating incremental file snapshots."
+  - "Stores file content in a SHA-256 content-addressable object store with whole-file deduplication and fixed 1 MiB block chunking for large files."
+  - "Writes immutable JSON snapshot manifests with SHA-256 digest sidecars and validates repository metadata and manifest structure."
+  - "Supports listing, showing, diffing, verifying, checking, restoring, pruning, garbage collection, and legacy manifest digest migration."
+  - "Uses staging and repository locking for mutating operations so failed writes do not intentionally commit incomplete repository state."
+  - "Restores full snapshots atomically into a destination or merges a selected file path when --file is used."
+accepted_limitations:
+  - "Academic and portfolio tool for local repositories, not a production backup service."
+  - "Intended for small local datasets; backup materializes the source tree in memory."
+  - "No encryption, compression, authentication, cloud storage, or remote replication."
+  - "Verify detects missing blobs, blob hash mismatches, and digest-sidecar mismatches; it is not tamper-proof if a writer rewrites both manifest and sidecar."
+  - "Change detection rehashes file contents; there is no mtime fast path."
+  - "Stable-read behavior may read each file up to three times."
+  - "Mutating repository operations use a single local lock; distributed locking and parallel backup are out of scope."
+  - "Default restore faithfully recreates symlink targets; --safe-symlinks is required for untrusted repositories."
+  - "JSON schema files document on-disk formats in the source repository and are not packaged as runtime wheel data."
+adrs:
+  - docs/adr/0001-content-addressable-storage.md
+  - docs/adr/0002-pure-content-hash-change-detection.md
+  - docs/adr/0003-whole-file-dedup.md
+  - docs/adr/0004-manifest-as-shallow-merkle-structure.md
+  - docs/adr/0005-hashing-not-encryption.md
+  - docs/adr/0006-never-destructive-by-default.md
+  - docs/adr/0007-repository-locking.md
+  - docs/adr/0008-fixed-size-block-chunking.md
+  - docs/adr/0009-manifest-trust-and-tamper-model.md
+  - docs/adr/0010-module-layout.md
+  - docs/adr/0011-deferred-backup-transaction-staging.md
+  - docs/adr/0012-scaling-and-incremental-scan-v2.md
+reproducibility:
+  install: "python -m pip install -e ."
+  run: "python -m backup_tool version"
+  expected_first_output: "0.1.0"

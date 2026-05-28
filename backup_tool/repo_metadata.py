@@ -36,6 +36,10 @@ def default_repo_metadata(now: datetime | None = None) -> dict[str, object]:
 
 
 def validate_repo_metadata(metadata: object) -> list[str]:
+    """Validate repository metadata fields enforced by ``check``.
+
+    ``created_at`` is written at init but treated as informational only (not validated).
+    """
     errors: list[str] = []
     if not isinstance(metadata, dict):
         return ["Repository metadata root must be an object"]

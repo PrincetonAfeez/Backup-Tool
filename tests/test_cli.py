@@ -234,12 +234,13 @@ def test_cli_invalid_arguments_exit_code_one():
     assert main(["backup"]) == 1
 
 
-def test_cli_info_counts_on_stdout(repo: Repository, repo_path: Path):
+def test_cli_info_counts_on_stderr(repo: Repository, repo_path: Path):
     stdout = io.StringIO()
-    with redirect_stdout(stdout):
+    stderr = io.StringIO()
+    with redirect_stdout(stdout), redirect_stderr(stderr):
         assert main(["info", "--repo", str(repo_path)]) == 0
-    lines = stdout.getvalue().splitlines()
-    assert lines[-1].startswith("snapshots=")
+    assert stdout.getvalue().strip().startswith("{")
+    assert stderr.getvalue().strip().startswith("snapshots=")
 
 
 def test_cli_internal_error_exit_code(repo: Repository, source_dir: Path, repo_path: Path):

@@ -169,15 +169,34 @@ def test_check_repair_quarantines_orphan_manifest_json(
     assert repo.list_snapshots()
 
 
+def test_check_repair_migrates_legacy_manifest_missing_sidecar(
+    repo: Repository,
+    source_dir: Path,
+):
+    (source_dir / "a.txt").write_text("hello", encoding="utf-8")
+    repo.backup(source_dir)
+    manifest_path = repo.manifest_store.path_for(repo.manifest_store.latest().snapshot_id)
+    sidecar = manifest_path.with_name(f"{manifest_path.name}.sha256")
+    sidecar.unlink()
+
+    result = repo.check(repair=True)
+
+    assert result.ok is True
+    assert result.repaired is True
+    assert sidecar.exists()
+    assert any("Migrated manifest digest sidecar" in warning for warning in result.warnings)
+
+
 def test_check_repair_help_describes_full_hygiene_actions():
     parser = build_parser()
     check_parser = parser._subparsers._group_actions[0].choices["check"]
     repair_action = next(action for action in check_parser._actions if action.dest == "repair")
     help_text = repair_action.help or ""
 
+    assert "migrate missing manifest digests" in help_text
     assert "quarantine malformed object paths" in help_text
     assert "unloadable snapshot manifests" in help_text
-    assert "orphan manifest digest sidecar" in help_text
+    assert "stale tmp artifacts" in help_text
     assert "orphan staging" in help_text
 
 

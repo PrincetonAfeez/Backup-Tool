@@ -12,7 +12,7 @@ manifests with digest sidecars.
 |------|-------|
 | Package | `backup_tool` |
 | Console | `backup-tool` |
-| Module CLI | `python -m backup_tool.cli` |
+| Module CLI | `python -m backup_tool` (also `python -m backup_tool.cli`) |
 | Python | 3.11+ |
 | Runtime deps | none |
 | Hash | SHA-256 |

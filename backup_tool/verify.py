@@ -11,7 +11,12 @@ from typing import TYPE_CHECKING
 
 from backup_tool.chunking import file_blob_hashes, verify_file_entry
 from backup_tool.errors import IntegrityError, ManifestError, StoreError
-from backup_tool.manifest import MANIFEST_VERSION, Manifest, manifest_stats_consistency_errors
+from backup_tool.manifest import (
+    MANIFEST_VERSION,
+    Manifest,
+    manifest_stats_consistency_errors,
+    try_migrate_manifest_digest,
+)
 from backup_tool.repo_metadata import validate_repo_metadata
 from backup_tool.tmp_hygiene import (
     iter_orphan_staging_dirs,
@@ -93,6 +98,8 @@ def check_repository(repo: Repository, *, repair: bool = False) -> CheckResult:
     quarantined_malformed: list[str] = []
     quarantined_manifests: list[str] = []
     orphaned: set[str] = set()
+    removed_stale_tmp = 0
+    migrated_manifest_digests = 0
 
     try:
         metadata = json.loads(repo.repo_json.read_text(encoding="utf-8"))
@@ -104,12 +111,34 @@ def check_repository(repo: Repository, *, repair: bool = False) -> CheckResult:
         try:
             manifest = repo.manifest_store.load_path(path)
         except ManifestError as exc:
+            msg = str(exc)
             if repair:
-                moved_to = _quarantine_manifest_path(repo, path)
-                quarantined_manifests.append(f"{path.name} -> {moved_to}")
-                warnings.append(f"Quarantined unloadable manifest: {path.name}")
-                continue
-            errors.append(str(exc))
+                if "digest sidecar missing" in msg:
+                    if try_migrate_manifest_digest(path):
+                        migrated_manifest_digests += 1
+                        warnings.append(f"Migrated manifest digest sidecar: {path.name}")
+                        try:
+                            manifest = repo.manifest_store.load_path(path)
+                        except ManifestError as retry_exc:
+                            errors.append(str(retry_exc))
+                            continue
+                    else:
+                        moved_to = _quarantine_manifest_path(repo, path)
+                        quarantined_manifests.append(f"{path.name} -> {moved_to}")
+                        warnings.append(f"Quarantined unloadable manifest: {path.name}")
+                        continue
+                else:
+                    moved_to = _quarantine_manifest_path(repo, path)
+                    quarantined_manifests.append(f"{path.name} -> {moved_to}")
+                    warnings.append(f"Quarantined unloadable manifest: {path.name}")
+                    continue
+            elif "digest sidecar missing" in msg:
+                errors.append(
+                    f"{msg}. Run `backup-tool migrate manifest-digests --repo <path>` "
+                    "for trusted legacy manifests."
+                )
+            else:
+                errors.append(msg)
             continue
         snapshot_count += 1
         errors.extend(manifest_stats_consistency_errors(manifest))
@@ -201,6 +230,28 @@ def check_repository(repo: Repository, *, repair: bool = False) -> CheckResult:
                 f"director{'y' if len(orphan_staging) == 1 else 'ies'} found"
             )
 
+    if repair:
+        removed_tmp, tmp_bytes = repo.object_store.remove_stale_tmp_files(dry_run=False)
+        if removed_tmp:
+            removed_stale_tmp = len(removed_tmp)
+            warnings.append(
+                f"Removed {removed_stale_tmp} stale blob tmp file(s); bytes={tmp_bytes}"
+            )
+        stale_manifest_tmp = iter_stale_manifest_tmp_files(repo.snapshots_dir)
+        for path in stale_manifest_tmp:
+            path.unlink(missing_ok=True)
+            removed_stale_tmp += 1
+        if stale_manifest_tmp:
+            warnings.append(
+                f"Removed {len(stale_manifest_tmp)} stale manifest tmp file(s)"
+            )
+        stale_lock_tmp = iter_stale_lock_tmp_files(repo.path)
+        for path in stale_lock_tmp:
+            path.unlink(missing_ok=True)
+            removed_stale_tmp += 1
+        if stale_lock_tmp:
+            warnings.append(f"Removed {len(stale_lock_tmp)} stale lock tmp file(s)")
+
     all_hashes = {hash_hex for hash_hex, _path in repo.object_store.iter_blob_paths()}
     orphaned = all_hashes - referenced
     if orphaned:
@@ -219,6 +270,8 @@ def check_repository(repo: Repository, *, repair: bool = False) -> CheckResult:
         repaired=bool(
             quarantined_malformed
             or quarantined_manifests
+            or migrated_manifest_digests
+            or removed_stale_tmp
             or (repair and orphan_staging)
             or removed_digest_sidecars
         ),

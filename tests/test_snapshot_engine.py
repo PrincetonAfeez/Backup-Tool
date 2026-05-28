@@ -142,6 +142,49 @@ def test_restore_snapshot_single_file_merges_into_nonempty_destination(
     assert not (destination / "b.txt").exists()
 
 
+def test_restore_snapshot_single_file_rejects_regular_file_destination(
+    engine: SnapshotEngine,
+    source_dir: Path,
+    tmp_path: Path,
+):
+    (source_dir / "a.txt").write_text("aaa", encoding="utf-8")
+    manifest = engine.build_snapshot(source_dir, None).manifest
+    destination = tmp_path / "target.txt"
+    destination.write_text("existing", encoding="utf-8")
+    with pytest.raises(RestoreError, match="must be a directory, not a regular file"):
+        engine.restore_snapshot(manifest, destination, file_path="a.txt", force=True)
+
+
+def test_restore_snapshot_single_file_rejects_symlink_destination(
+    engine: SnapshotEngine,
+    source_dir: Path,
+    tmp_path: Path,
+):
+    if not hasattr(os, "symlink"):
+        pytest.skip("symlinks unavailable")
+
+    (source_dir / "a.txt").write_text("aaa", encoding="utf-8")
+    manifest = engine.build_snapshot(source_dir, None).manifest
+    real_dir = tmp_path / "real"
+    real_dir.mkdir()
+    destination = tmp_path / "restore-link"
+    try:
+        os.symlink(real_dir, destination)
+    except OSError:
+        pytest.skip("symlink creation is not supported on this platform")
+    with pytest.raises(RestoreError, match="must be a directory, not a symlink"):
+        engine.restore_snapshot(manifest, destination, file_path="a.txt", force=True)
+
+
+def test_build_snapshot_rejects_bare_exclude_wildcard(
+    engine: SnapshotEngine,
+    source_dir: Path,
+):
+    (source_dir / "a.txt").write_text("a", encoding="utf-8")
+    with pytest.raises(ManifestError, match="Exclude pattern cannot be"):
+        engine.build_snapshot(source_dir, None, excludes=["*"])
+
+
 def test_restore_snapshot_no_matches_raises(engine: SnapshotEngine, source_dir: Path, tmp_path: Path):
     (source_dir / "a.txt").write_text("a", encoding="utf-8")
     manifest = engine.build_snapshot(source_dir, None).manifest

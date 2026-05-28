@@ -90,9 +90,9 @@ def is_process_alive(pid: int) -> bool:
 def clear_stale_lock(path: Path) -> int | None:
     """Remove a lock file when its owning process is no longer alive.
 
-    Empty locks and malformed locks without a ``pid=`` line are removed when
-    they are older than :data:`DEFAULT_LOCK_STALE_SECONDS`. Recent malformed
-    locks still require ``--break-lock``.
+    Empty locks are removed immediately. Malformed locks without a ``pid=`` line are
+    removed when they are older than :data:`DEFAULT_LOCK_STALE_SECONDS`. Recent
+    malformed locks still require ``--break-lock``.
 
     Returns the cleared PID, or None when no stale lock was removed.
     """
